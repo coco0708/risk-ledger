@@ -551,7 +551,7 @@ function makeSample(){
 
 function load(){
   const raw = loadRaw();
-  if(raw){ try{ const o=JSON.parse(raw); if(o && o.settings && Array.isArray(o.trades)){ o.settings = Object.assign(clone(DEF), o.settings); return o; } }catch(e){} }
+  if(raw){ try{ const o=JSON.parse(raw); if(o && o.settings && Array.isArray(o.trades)){ o.settings = Object.assign(clone(DEF), o.settings); o.settings.mode="compound"; return o; } }catch(e){} }
   return makeSample();
 }
 
@@ -571,7 +571,7 @@ function render(){
 function header(){
   const st=S.settings;
   return `<header class="top"><div class="brand">Risk Ledger <span>· ${esc(st.currency)}</span></div>
-    <span class="chip mute">${st.mode==="flat"?"Flat":"Compound"} · ${st.riskPct}%</span></header>`;
+    <span class="chip mute">Compound · ${st.riskPct}%</span></header>`;
 }
 
 function sampleBanner(){
@@ -624,14 +624,6 @@ function viewDash(c){
     </div>
     <div class="note">TP1 is the share of closed trades that reached it. Each later TP is the share of trades that went on from the one before.${be!=null?` The tick on the TP1 bar marks breakeven (${pct(be,0)}).`:""}</div>
     <div class="verdict">${verdict}</div>
-  </section>
-
-  <section class="card">
-    <div class="label">Same trades, both sizing methods</div>
-    <div class="cmp">
-      <div><span class="k" style="color:var(--ink-2);font-size:13px">Compound</span><span class="num ${st.mode!=="flat"?"on":""}">${money(c.comp.bal)}</span><span class="num" style="font-size:12.5px;color:var(--ink-3)">max DD ${pct(c.comp.dd)}</span></div>
-      <div><span class="k" style="color:var(--ink-2);font-size:13px">Flat</span><span class="num ${st.mode==="flat"?"on":""}">${money(c.flat.bal)}</span><span class="num" style="font-size:12.5px;color:var(--ink-3)">max DD ${pct(c.flat.dd)}</span></div>
-    </div>
   </section>`;
 }
 
@@ -766,11 +758,8 @@ function viewSettings(){
       <div class="field"><label for="s-capital">Starting capital</label><input id="s-capital" class="num" inputmode="decimal" value="${st.capital}"></div>
       <div class="field"><label for="s-currency">Currency</label><input id="s-currency" value="${esc(st.currency)}"></div>
     </div>
-    <div class="two">
-      <div class="field"><label for="s-risk">Risk per trade (%)</label><input id="s-risk" class="num" inputmode="decimal" value="${st.riskPct}"></div>
-      <div class="field"><label>Sizing</label><div class="seg" id="s-mode"><button data-mode="compound" aria-pressed="${st.mode!=="flat"}">Compound</button><button data-mode="flat" aria-pressed="${st.mode==="flat"}">Flat</button></div></div>
-    </div>
-    <div class="field"><span class="hint">Compound risks a % of your current balance. Flat risks a % of starting capital every time.</span></div>
+    <div class="field"><label for="s-risk">Risk per trade (% of current balance)</label><input id="s-risk" class="num" inputmode="decimal" value="${st.riskPct}">
+      <span class="hint">Compounding: each trade risks this % of your balance at that moment, so risk grows as you win and shrinks as you lose.</span></div>
     ${connectedEx().length?`<button class="btn ghost" data-act="capFromEx">Use my futures balance: ${money(futWalletTotal()||0)} ${esc(st.currency)}</button>`:""}
     ${st.capitalFrom?`<span class="hint" style="font-size:12.5px;color:var(--ink-3)">Starting capital taken from ${esc(st.capitalFrom)}. Open-position P&amp;L isn't included.</span>`:""}
   </section>
@@ -1059,7 +1048,6 @@ function toast(m){ const t=$("toast"); t.textContent=m; t.hidden=false; clearTim
 document.addEventListener("click",e=>{
   const tab=e.target.closest("nav.tabs button"); if(tab){ ui.tab=tab.dataset.tab; window.scrollTo(0,0); render(); return; }
   const f=e.target.closest("[data-filter]"); if(f){ ui.filter=f.dataset.filter; render(); return; }
-  const m=e.target.closest("[data-mode]"); if(m){ S.settings.mode=m.dataset.mode; persist(); render(); return; }
   const o=e.target.closest("[data-open]"); if(o){ tradeSheet(o.dataset.open); return; }
   const mp=e.target.closest("[data-mpair]"); if(mp){ newTradeSheet({ex:ui.mk.ex, market:ui.mk.market, pair:mp.dataset.mpair, entry:+mp.dataset.mpx}); return; }
   const ps=e.target.closest("[data-pos]"); if(ps){ const p=ui.posList[+ps.dataset.pos]; if(!p) return;
