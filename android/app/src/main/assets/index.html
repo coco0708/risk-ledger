@@ -166,6 +166,8 @@ a.btn{display:block;text-align:center;text-decoration:none}
 .savebar{display:flex;flex-direction:column;gap:8px;border-top:1px solid var(--line);padding-top:12px;margin-top:4px}
 .savebar [data-dirty]{color:var(--warn);font-size:13px;font-weight:600}
 .savebar .btn:disabled{background:var(--line);color:var(--ink-3);cursor:default}
+.sugg{margin-top:-6px;max-height:300px;overflow-y:auto}
+.sugg .mrow{padding:11px 14px}
 .toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(92px + env(safe-area-inset-bottom,0px));background:var(--ink);color:var(--bg);padding:10px 16px;border-radius:10px;font-size:14px;font-weight:600;z-index:20}
 @media (max-width:360px){.grid{grid-template-columns:repeat(2,minmax(0,1fr))}.hero .bal{font-size:32px}}
 @media (prefers-reduced-motion:no-preference){.sheet:not([hidden]){animation:up .18s ease-out}@keyframes up{from{transform:translateY(16px);opacity:.6}to{transform:none;opacity:1}}}
@@ -947,9 +949,10 @@ function newTradeSheet(pre){
       <div class="field"><label>Market</label><div class="seg" id="n-mkt"><button type="button" data-mkt="spot" aria-pressed="${ui.sheet.market==="spot"}">Spot</button><button type="button" data-mkt="futures" aria-pressed="${ui.sheet.market!=="spot"}">Futures</button></div></div>
     </div>
     <div class="two">
-      <div class="field"><label for="n-pair">Pair</label><input id="n-pair" list="pairlist" placeholder="BTC/USDT" value="${esc(pre.pair||"")}" autocapitalize="characters" autocomplete="off"><datalist id="pairlist">${((allCache[ui.sheet.ex+"|"+ui.sheet.market]||{}).rows||COMMON_PAIRS.map(p=>({pair:p}))).slice(0,400).map(r=>`<option value="${r.pair}"></option>`).join("")}</datalist></div>
+      <div class="field"><label for="n-pair">Pair</label><input id="n-pair" placeholder="Type e.g. SOL" value="${esc(pre.pair||"")}" autocapitalize="characters" autocomplete="off" spellcheck="false"></div>
       <div class="field"><label for="n-date">Date</label><input id="n-date" type="date" value="${todayStr()}"></div>
     </div>
+    <div class="list sugg" id="n-sugg" hidden></div>
     <div class="field"><label>Direction</label><div class="seg" id="n-dir"><button type="button" data-dir="Long" aria-pressed="${ui.sheet.dir!=="Short"}">Long</button><button type="button" data-dir="Short" aria-pressed="${ui.sheet.dir==="Short"}">Short</button></div></div>
     <div class="two">
       <div class="field" id="f-entry"><div class="lblrow"><label for="n-entry">Entry price</label><button type="button" class="linkbtn" id="n-live">Live</button></div><input id="n-entry" class="num" inputmode="decimal" placeholder="0.00" value="${pre.entry||""}"></div>
@@ -1002,6 +1005,30 @@ function newTradeSheet(pre){
   }
   $("n-pair").addEventListener("input",()=>{ clearTimeout(levTimer); levTimer=setTimeout(levFromMexc,600); });
   $("n-pair").addEventListener("change",levFromMexc);
+  // Pair search: matching MEXC futures pairs with live prices, as you type.
+  const sugg=$("n-sugg");
+  async function showSugg(){
+    const q=($("n-pair").value||"").toUpperCase().replace(/[^A-Z0-9]/g,"");
+    if(!q){ sugg.hidden=true; return; }
+    let rows=[]; try{ rows=await allPairs(ui.sheet.ex, ui.sheet.market); }catch(e){ rows=COMMON_PAIRS.map(p=>{ const x=splitPair(p); return {pair:p,b:x.b,q:x.q,p:null}; }); }
+    const cur=($("n-pair").value||"").toUpperCase().replace(/[^A-Z0-9]/g,"");
+    if(cur!==q) return; // you kept typing
+    const list=rows.filter(r=>(r.b+r.q).includes(q))
+      .sort((a,b)=>{ const sa=a.b.startsWith(q)?0:1, sb=b.b.startsWith(q)?0:1; if(sa!==sb) return sa-sb; const ua=a.q==="USDT"?0:1, ub=b.q==="USDT"?0:1; if(ua!==ub) return ua-ub; return a.b.length-b.b.length || a.pair.localeCompare(b.pair); })
+      .slice(0,8);
+    if(!list.length || (list.length===1 && list[0].b+list[0].q===q && sugg.dataset.picked===q)){ sugg.hidden=true; return; }
+    sugg.innerHTML=list.map(r=>`<button type="button" class="mrow" data-sp="${esc(r.pair)}" data-spx="${r.p||""}"><span class="pair">${esc(r.pair)}</span><span class="px num">${r.p?price(r.p):""}</span></button>`).join("");
+    sugg.hidden=false;
+  }
+  let suggT=null;
+  $("n-pair").addEventListener("input",()=>{ delete sugg.dataset.picked; clearTimeout(suggT); suggT=setTimeout(showSugg,150); });
+  $("n-pair").addEventListener("focus",showSugg);
+  sugg.addEventListener("click",e=>{ const b=e.target.closest("[data-sp]"); if(!b) return;
+    $("n-pair").value=b.dataset.sp; sugg.dataset.picked=b.dataset.sp.replace("/",""); sugg.hidden=true;
+    const px=parseFloat(b.dataset.spx);
+    if(px>0 && !$("n-entry").value){ $("n-entry").value=px; const m=$("n-livemsg"); m.hidden=false; m.textContent=`Entry set to the live price ${price(px)}. Change it if you're using a limit price.`; }
+    levFromMexc(); upd(); });
+  document.addEventListener("click",e=>{ if(!e.target.closest("#n-sugg") && e.target.id!=="n-pair" && sugg) sugg.hidden=true; });
   if(pre.lev) $("n-levsrc").textContent="From your open MEXC position"; else if($("n-pair").value) levFromMexc();
   $("ntf").addEventListener("submit",e=>{ e.preventDefault(); saveNew(); });
   upd();
