@@ -1,0 +1,28 @@
+plugins { id "com.android.application" }
+android {
+    namespace "com.riskledger.app"
+    compileSdk 35
+    defaultConfig {
+        applicationId "com.riskledger.app"
+        minSdk 26
+        targetSdk 34
+        versionCode 1
+        versionName "1.0"
+    }
+    signingConfigs {
+        // Fixed key kept in the project so every build can update the app without losing your data.
+        ledger {
+            storeFile file("risk-ledger.jks")
+            storePassword "riskledger"
+            keyAlias "riskledger"
+            keyPassword "riskledger"
+        }
+    }
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig signingConfigs.ledger
+        }
+    }
+    compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
+}

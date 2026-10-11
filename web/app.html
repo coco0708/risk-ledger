@@ -1,0 +1,582 @@
+<title>Risk Ledger</title>
+<!--FONTS-->
+<style>
+/* Layout: one narrow column, summary first; fixed bottom tab bar; full-screen sheets for forms */
+:root{
+  --bg:#f5f6f8; --surface:#ffffff; --line:#e3e6ec; --ink:#14171f; --ink-2:#5b6272; --ink-3:#8b92a1;
+  --accent:#2f4bd8; --accent-soft:#e8ecfd; --up:#0f8a5f; --up-soft:#e2f4ec; --down:#c8372d; --down-soft:#fbe7e5; --warn:#a86400; --warn-soft:#fdf0db;
+  --f-ui:"Figtree",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  --f-num:"JetBrains Mono",ui-monospace,"Roboto Mono",Menlo,monospace;
+  --r:14px;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --bg:#0e1015; --surface:#171a21; --line:#262a34; --ink:#eef0f4; --ink-2:#a3a9b6; --ink-3:#6f7584;
+  --accent:#7d93ff; --accent-soft:#1d2440; --up:#3ccf91; --up-soft:#12291f; --down:#ff7a6e; --down-soft:#331816; --warn:#f0a63a; --warn-soft:#2e2312; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#0e1015; --surface:#171a21; --line:#262a34; --ink:#eef0f4; --ink-2:#a3a9b6; --ink-3:#6f7584;
+  --accent:#7d93ff; --accent-soft:#1d2440; --up:#3ccf91; --up-soft:#12291f; --down:#ff7a6e; --down-soft:#331816; --warn:#f0a63a; --warn-soft:#2e2312; color-scheme:dark}
+*{box-sizing:border-box}
+html,body{min-height:100%}
+body{background:var(--bg);color:var(--ink);font-family:var(--f-ui);font-size:15px;line-height:1.4;-webkit-tap-highlight-color:transparent}
+button,input,select,textarea{font:inherit;color:inherit}
+.num{font-family:var(--f-num);font-variant-numeric:tabular-nums;letter-spacing:-.01em}
+.wrap{max-width:520px;margin:0 auto;padding:12px 16px 150px;display:flex;flex-direction:column;gap:14px}
+header.top{display:flex;align-items:center;justify-content:space-between;padding-top:6px}
+.brand{font-weight:700;font-size:17px;letter-spacing:-.01em}
+.brand span{color:var(--ink-3);font-weight:500}
+.chip{display:inline-flex;align-items:center;gap:6px;border-radius:999px;padding:4px 10px;font-size:12px;font-weight:600;letter-spacing:.02em;background:var(--accent-soft);color:var(--accent)}
+.chip.up{background:var(--up-soft);color:var(--up)} .chip.down{background:var(--down-soft);color:var(--down)} .chip.warn{background:var(--warn-soft);color:var(--warn)} .chip.mute{background:var(--line);color:var(--ink-2)}
+.label{font-size:11.5px;font-weight:600;letter-spacing:.07em;text-transform:uppercase;color:var(--ink-3)}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);padding:16px}
+.up{color:var(--up)} .down{color:var(--down)}
+/* hero */
+.hero{display:flex;flex-direction:column;gap:2px;padding:18px 16px 8px}
+.hero .bal{font-size:38px;font-weight:500;line-height:1.1;margin-top:4px}
+.hero .bal small{font-size:15px;color:var(--ink-3);font-family:var(--f-ui);font-weight:600;margin-left:6px}
+.hero .delta{font-size:14px;font-weight:600}
+.spark{position:relative;margin:10px -4px 0;height:96px}
+.spark svg{display:block;width:100%;height:100%;overflow:visible}
+.spark .tip{position:absolute;top:-6px;transform:translateX(-50%);background:var(--ink);color:var(--bg);font-size:12px;padding:3px 7px;border-radius:6px;pointer-events:none;white-space:nowrap}
+/* banner */
+.banner{display:flex;align-items:center;justify-content:space-between;gap:12px;background:var(--accent-soft);color:var(--ink);border-radius:var(--r);padding:12px 14px;font-size:13.5px}
+.banner b{color:var(--accent)}
+/* rows */
+.kv{display:flex;justify-content:space-between;align-items:baseline;gap:12px;padding:9px 0;border-top:1px solid var(--line)}
+.kv:first-of-type{border-top:0}
+.kv .k{color:var(--ink-2);font-size:14px}
+.kv .v{font-size:15px;font-weight:500;text-align:right}
+.next{display:flex;flex-direction:column;gap:10px}
+.next .big{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+.next .big .num{font-size:26px;font-weight:500}
+/* stat grid */
+.grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:1px;background:var(--line);border:1px solid var(--line);border-radius:var(--r);overflow:hidden}
+.stat{background:var(--surface);padding:13px 12px;display:flex;flex-direction:column;gap:4px;min-width:0}
+.stat .v{font-size:18px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* funnel */
+.funnel{display:flex;flex-direction:column;gap:12px;margin-top:12px}
+.frow{display:grid;grid-template-columns:38px 1fr 54px;align-items:center;gap:10px}
+.frow .t{font-weight:600;font-size:13px}
+.bar{position:relative;height:10px;background:var(--line);border-radius:5px}
+.bar i{position:absolute;inset:0 auto 0 0;background:var(--accent);border-radius:5px;min-width:2px}
+.bar .be{position:absolute;top:-5px;bottom:-5px;width:2px;background:var(--ink);border-radius:1px}
+.frow .p{text-align:right;font-size:13.5px}
+.note{font-size:13px;color:var(--ink-2);margin-top:12px}
+.verdict{margin-top:12px}
+.cmp{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:10px}
+.cmp div{display:flex;flex-direction:column;gap:2px}
+.cmp .num{font-size:17px}
+.cmp .on{color:var(--accent)}
+.sechead{display:flex;justify-content:space-between;align-items:center;gap:8px}
+/* trades */
+.seg{display:flex;background:var(--line);border-radius:10px;padding:3px;gap:3px}
+.seg button{flex:1;border:0;background:transparent;border-radius:8px;padding:8px 6px;font-weight:600;font-size:13.5px;color:var(--ink-2);cursor:pointer}
+.seg button[aria-pressed="true"]{background:var(--surface);color:var(--ink);box-shadow:0 1px 2px rgba(0,0,0,.08)}
+.list{display:flex;flex-direction:column;background:var(--surface);border:1px solid var(--line);border-radius:var(--r);overflow:hidden}
+.trow{display:grid;grid-template-columns:1fr auto;gap:4px 12px;padding:13px 16px;border:0;border-top:1px solid var(--line);background:transparent;text-align:left;cursor:pointer;width:100%}
+.trow:first-child{border-top:0}
+.trow:active{background:var(--bg)}
+.trow .pair{font-weight:600;display:flex;gap:8px;align-items:center;min-width:0}
+.trow .r{text-align:right;font-weight:500}
+.trow .sub{font-size:12.5px;color:var(--ink-3)}
+.trow .sub.rt{text-align:right}
+.dir{font-size:11px;font-weight:700;letter-spacing:.05em;padding:2px 6px;border-radius:5px}
+.dir.L{background:var(--up-soft);color:var(--up)} .dir.S{background:var(--down-soft);color:var(--down)}
+.empty{text-align:center;color:var(--ink-2);padding:36px 16px;display:flex;flex-direction:column;gap:12px;align-items:center}
+/* buttons */
+.btn{border:0;border-radius:12px;padding:13px 16px;font-weight:600;font-size:15px;cursor:pointer;background:var(--accent);color:var(--surface);width:100%}
+.btn.ghost{background:var(--line);color:var(--ink)}
+.btn.danger{background:var(--down-soft);color:var(--down)}
+.btn.sm{width:auto;padding:8px 12px;font-size:13.5px;border-radius:10px}
+.fab{position:fixed;right:max(16px,calc(50% - 244px));bottom:calc(80px + env(safe-area-inset-bottom,0px));border:0;border-radius:16px;background:var(--accent);color:var(--surface);font-weight:700;padding:15px 20px;font-size:15px;box-shadow:0 6px 20px rgba(20,30,80,.25);cursor:pointer;z-index:5}
+button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+/* tabs */
+nav.tabs{position:fixed;left:0;right:0;bottom:0;background:var(--surface);border-top:1px solid var(--line);display:flex;justify-content:center;padding:6px 8px calc(6px + env(safe-area-inset-bottom,0px));z-index:6}
+nav.tabs .in{display:flex;max-width:520px;width:100%}
+nav.tabs button{flex:1;border:0;background:transparent;padding:8px 4px;display:flex;flex-direction:column;align-items:center;gap:3px;font-size:12px;font-weight:600;color:var(--ink-3);cursor:pointer}
+nav.tabs button svg{width:22px;height:22px}
+nav.tabs button[aria-selected="true"]{color:var(--accent)}
+/* sheet */
+.sheet{position:fixed;inset:0;background:var(--bg);z-index:10;overflow-y:auto;padding-top:env(safe-area-inset-top,0px)}
+.sheet .wrap{padding-bottom:40px}
+.sheet header{display:flex;align-items:center;gap:8px;position:sticky;top:0;background:var(--bg);padding:10px 0;z-index:2}
+.sheet header h2{font-size:18px;margin:0;flex:1}
+.x{border:0;background:var(--line);border-radius:10px;width:38px;height:38px;cursor:pointer;font-size:20px;line-height:1}
+/* form */
+.form{display:flex;flex-direction:column;gap:12px}
+.field{display:flex;flex-direction:column;gap:6px;min-width:0}
+.field label{font-size:13px;font-weight:600;color:var(--ink-2)}
+.field input,.field select,.field textarea{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:12px;font-size:16px;width:100%;min-width:0}
+.field input.num{font-family:var(--f-num)}
+.field .hint{font-size:12.5px;color:var(--ink-3)}
+.field.bad input{border-color:var(--down)}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.tps{display:grid;grid-template-columns:44px 1fr 1fr;gap:8px 10px;align-items:center}
+.tps .h{font-size:12px;color:var(--ink-3);font-weight:600}
+.tps input{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:10px;font-size:16px;width:100%;min-width:0;font-family:var(--f-num)}
+.outs{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
+.outs button{border:1px solid var(--line);background:var(--surface);border-radius:10px;padding:11px 4px;font-weight:700;font-size:13.5px;cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:2px}
+.outs button small{font-family:var(--f-num);font-weight:500;font-size:11.5px;color:var(--ink-3)}
+.outs button[aria-pressed="true"]{border-color:var(--accent);background:var(--accent-soft);color:var(--accent)}
+.outs button[aria-pressed="true"] small{color:var(--accent)}
+.preview .kv .v{font-family:var(--f-num)}
+.tplist{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:4px}
+.tplist div{background:var(--bg);border-radius:10px;padding:8px;display:flex;flex-direction:column;gap:2px;min-width:0}
+.tplist .num{font-size:12.5px;overflow:hidden;text-overflow:ellipsis}
+.err{color:var(--down);font-size:13.5px;font-weight:600}
+textarea.io{font-family:var(--f-num);font-size:12px;min-height:140px}
+.confirm{display:flex;gap:8px}
+.toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(92px + env(safe-area-inset-bottom,0px));background:var(--ink);color:var(--bg);padding:10px 16px;border-radius:10px;font-size:14px;font-weight:600;z-index:20}
+@media (max-width:360px){.grid{grid-template-columns:repeat(2,minmax(0,1fr))}.hero .bal{font-size:32px}}
+@media (prefers-reduced-motion:no-preference){.sheet:not([hidden]){animation:up .18s ease-out}@keyframes up{from{transform:translateY(16px);opacity:.6}to{transform:none;opacity:1}}}
+</style>
+
+<main id="view" class="wrap"></main>
+<button id="fab" class="fab" hidden>+ New trade</button>
+<nav class="tabs"><div class="in" role="tablist">
+  <button id="t-dash" role="tab" data-tab="dash"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19V5"/><path d="M4 19h16"/><path d="M7 15l4-4 3 3 5-6"/></svg>Dashboard</button>
+  <button id="t-trades" role="tab" data-tab="trades"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M8 6h12M8 12h12M8 18h12"/><circle cx="4" cy="6" r="1" fill="currentColor"/><circle cx="4" cy="12" r="1" fill="currentColor"/><circle cx="4" cy="18" r="1" fill="currentColor"/></svg>Trades</button>
+  <button id="t-settings" role="tab" data-tab="settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></svg>Settings</button>
+</div></nav>
+<section id="sheet" class="sheet" hidden><div class="wrap" id="sheetBody"></div></section>
+<div id="toast" class="toast" hidden></div>
+
+<script>
+"use strict";
+/* ---------- storage: native file on Android, browser storage elsewhere ---------- */
+const KEY = "risk-ledger-v1";
+const Native = window.AndroidStore || null;
+function loadRaw(){ try{ if(Native) return Native.load(); return localStorage.getItem(KEY); }catch(e){ return null; } }
+function saveRaw(s){ try{ if(Native) Native.save(s); else localStorage.setItem(KEY, s); }catch(e){} }
+
+const DEF = { capital:1000, currency:"USDT", riskPct:3, mode:"compound", brakeDD:15, brakeMult:50,
+  tps:[{r:1,pct:25},{r:2,pct:25},{r:3,pct:25},{r:4,pct:25}] };
+let S; // {settings, trades, sample}
+let ui = { tab:"dash", filter:"all", sheet:null };
+
+const clone = o => JSON.parse(JSON.stringify(o));
+const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2,6);
+const todayStr = () => { const d=new Date(); d.setMinutes(d.getMinutes()-d.getTimezoneOffset()); return d.toISOString().slice(0,10); };
+function esc(s){ return String(s==null?"":s).replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+function persist(){ saveRaw(JSON.stringify(S,(k,v)=>(k==="_R"||k==="_pnl")?undefined:v)); }
+
+/* ---------- math (same rules as the Excel tracker) ---------- */
+const OUTS = ["SL","BE","TP1","TP2","TP3","TP4"];
+function rFor(outcome, manualR, st){
+  st = st || S.settings;
+  if(outcome==="Manual") return Number(manualR)||0;
+  if(outcome==="SL") return -1;
+  if(outcome==="BE") return 0;
+  const n = {TP1:1,TP2:2,TP3:3,TP4:4}[outcome]; if(!n) return 0;
+  let r=0; for(let i=0;i<n;i++) r += st.tps[i].r * st.tps[i].pct/100; return r;
+}
+function tpPrice(entry, sl, dir, r){ const d=Math.abs(entry-sl); return entry + (dir==="Short"?-1:1)*r*d; }
+function closedSorted(trades){ return trades.filter(t=>t.outcome).sort((a,b)=>(a.closedAt-b.closedAt)||(a.created-b.created)); }
+
+function compute(st, trades){
+  const cap = Number(st.capital)||0;
+  const closed = closedSorted(trades);
+  let bal=cap, peak=cap, maxDD=0, streak=0, maxStreak=0, wins=0, losses=0, be=0, sumR=0, gW=0, gL=0, sumWinR=0, sumLossR=0;
+  const curve=[{bal:cap,label:"Start"}];
+  for(const t of closed){
+    const R = rFor(t.outcome, t.manualR, st);
+    const pnl = R*t.riskUsd - (Number(t.fees)||0);
+    t._R=R; t._pnl=pnl;
+    bal+=pnl; peak=Math.max(peak,bal); if(peak>0) maxDD=Math.max(maxDD,1-bal/peak);
+    sumR+=R;
+    if(R>0){wins++; gW+=R; sumWinR+=R; streak=0;} else if(R<0){losses++; gL+=-R; sumLossR+=R; streak++; maxStreak=Math.max(maxStreak,streak);} else be++;
+    curve.push({bal, label:t.pair+" · "+t.outcome});
+  }
+  const dd = peak>0 ? Math.max(0,1-bal/peak) : 0;
+  const brake = dd >= st.brakeDD/100;
+  const nextPct = st.riskPct * (brake ? st.brakeMult/100 : 1);
+  const base = st.mode==="flat" ? cap : Math.max(bal,0);
+  const nextUsd = base*nextPct/100;
+  const open = trades.filter(t=>!t.outcome);
+  const openRisk = open.reduce((s,t)=>s+(Number(t.riskUsd)||0),0);
+  // TP funnel (manual exits excluded)
+  const tagged = closed.filter(t=>t.outcome!=="Manual");
+  const idx = o => OUTS.indexOf(o); // TP1=2..TP4=5
+  const reach = [2,3,4,5].map(k=>tagged.filter(t=>idx(t.outcome)>=k).length);
+  const funnel = reach.map((c,i)=>({c, rate: (i===0 ? (tagged.length? c/tagged.length : null) : (reach[i-1]? c/reach[i-1] : null))}));
+  const tpTrades = tagged.filter(t=>idx(t.outcome)>=2);
+  const avgTpR = tpTrades.length ? tpTrades.reduce((s,t)=>s+t._R,0)/tpTrades.length : null;
+  const beRate = avgTpR ? 1/(1+avgTpR) : null;
+  // same trades under both sizing methods
+  const sim = mode => { let b=cap,p=cap,md=0; for(const t of closed){ const d=p>0?1-b/p:0; const pct=st.riskPct*(d>=st.brakeDD/100?st.brakeMult/100:1); const risk=(mode==="flat"?cap:Math.max(b,0))*pct/100; b+=t._R*risk-(Number(t.fees)||0); p=Math.max(p,b); if(p>0) md=Math.max(md,1-b/p);} return {bal:b,dd:md}; };
+  return { cap, bal, peak, dd, maxDD, brake, nextPct, nextUsd, open, openRisk, closed, curve,
+    n:closed.length, wins, losses, be, winRate: closed.length? wins/closed.length : null,
+    expR: closed.length? sumR/closed.length : null, totalR:sumR, pf: gL? gW/gL : (gW? Infinity : null),
+    avgWin: wins? sumWinR/wins : null, avgLoss: losses? sumLossR/losses : null, maxStreak,
+    funnel, taggedN:tagged.length, avgTpR, beRate, comp: st.mode==="flat"? sim("compound") : {bal, dd:maxDD}, flat: st.mode==="flat"? {bal, dd:maxDD} : sim("flat") };
+}
+
+/* ---------- formatting ---------- */
+const nf2 = new Intl.NumberFormat("en-US",{minimumFractionDigits:2,maximumFractionDigits:2});
+const money = v => (v<0?"−":"") + nf2.format(Math.abs(v));
+const smoney = v => (v>0?"+":v<0?"−":"") + nf2.format(Math.abs(v));
+const pct = (v,d=1) => v==null ? "—" : (v*100).toFixed(d)+"%";
+const R = v => v==null ? "—" : (v>0?"+":v<0?"−":"") + Math.abs(v).toFixed(2)+"R";
+function price(p){ if(!isFinite(p)) return "—"; const a=Math.abs(p); const d = a>=1000?2 : a>=1?4 : a>=0.01?6 : 8; return p.toLocaleString("en-US",{minimumFractionDigits:Math.min(d,2),maximumFractionDigits:d}); }
+function units(u){ if(!isFinite(u)) return "—"; const a=Math.abs(u); const d = a>=100?2 : a>=1?4 : 6; return u.toLocaleString("en-US",{maximumFractionDigits:d}); }
+const cls = v => v>0?"up":v<0?"down":"";
+
+/* ---------- sample data (first launch only, clearly marked) ---------- */
+function makeSample(){
+  const st = clone(DEF); const trades=[];
+  const rows = [
+    ["BTCUSDT","Long",62000,60760,"TP2"],["ETHUSDT","Short",2650,2716,"SL"],["SOLUSDT","Long",148.2,144.6,"TP1"],
+    ["BTCUSDT","Long",63150,61900,"TP3"],["ETHUSDT","Long",2580,2528,"SL"],["SOLUSDT","Short",152.4,156.1,"BE"],
+    ["BTCUSDT","Short",64800,66000,"TP4"],["XRPUSDT","Long",0.5412,0.5280,"SL"],["ETHUSDT","Long",2610,2557,"TP1"],
+    ["BTCUSDT","Long",61500,60300,"TP2"],["SOLUSDT","Long",141.0,137.2,"SL"],["ETHUSDT","Short",2700,2754,"TP1"],
+    ["BTCUSDT","Long",62400,61150,null]];
+  const start = Date.now() - rows.length*86400000;
+  rows.forEach((r,i)=>{
+    const c = compute(st, trades);
+    const t = {id:uid()+i, created:start+i*86400000, date:new Date(start+i*86400000).toISOString().slice(0,10), pair:r[0], dir:r[1], entry:r[2], sl:r[3],
+      riskPct:c.nextPct, riskUsd:+c.nextUsd.toFixed(2), outcome:r[4], manualR:null, fees:r[4]? +(c.nextUsd*0.04).toFixed(2):0, note:"Sample", closedAt:r[4]? start+i*86400000+3600000 : null};
+    trades.push(t);
+  });
+  return {settings:st, trades, sample:true};
+}
+
+function load(){
+  const raw = loadRaw();
+  if(raw){ try{ const o=JSON.parse(raw); if(o && o.settings && Array.isArray(o.trades)){ o.settings = Object.assign(clone(DEF), o.settings); return o; } }catch(e){} }
+  return makeSample();
+}
+
+/* ---------- views ---------- */
+const $ = id => document.getElementById(id);
+function render(){
+  const c = compute(S.settings, S.trades);
+  document.querySelectorAll("nav.tabs button").forEach(b=>b.setAttribute("aria-selected", String(b.dataset.tab===ui.tab)));
+  $("fab").hidden = ui.tab==="settings";
+  $("view").innerHTML = ui.tab==="dash" ? viewDash(c) : ui.tab==="trades" ? viewTrades(c) : viewSettings(c);
+  if(ui.tab==="dash") drawSpark(c);
+  if(ui.tab==="settings") bindSettings();
+}
+
+function header(){
+  const st=S.settings;
+  return `<header class="top"><div class="brand">Risk Ledger <span>· ${esc(st.currency)}</span></div>
+    <span class="chip mute">${st.mode==="flat"?"Flat":"Compound"} · ${st.riskPct}%</span></header>`;
+}
+
+function sampleBanner(){
+  return S.sample ? `<div class="banner"><div><b>Sample trades.</b> Clear them to start your own log.</div><button class="btn sm" data-act="clearSample">Clear</button></div>` : "";
+}
+
+function viewDash(c){
+  const st=S.settings, cur=esc(st.currency);
+  const net=c.bal-c.cap, ret=c.cap? net/c.cap : 0;
+  const f=c.funnel, be=c.beRate;
+  const tp1=f[0].rate;
+  let verdict = `<span class="chip mute">Log a few trades to see your edge</span>`;
+  if(tp1!=null && be!=null) verdict = tp1>be ? `<span class="chip up">TP1 rate ${pct(tp1,0)} is above breakeven ${pct(be,0)}</span>` : `<span class="chip down">TP1 rate ${pct(tp1,0)} is below breakeven ${pct(be,0)}</span>`;
+  const pf = c.pf==null? "—" : c.pf===Infinity? "∞" : c.pf.toFixed(2);
+  return `${header()}${sampleBanner()}
+  <section class="card hero" aria-label="Balance">
+    <div class="label">Balance</div>
+    <div class="bal num">${money(c.bal)}<small>${cur}</small></div>
+    <div class="delta num ${cls(net)}">${smoney(net)} (${ret>=0?"+":""}${(ret*100).toFixed(1)}%) <span style="color:var(--ink-3);font-family:var(--f-ui);font-weight:500">since start</span></div>
+    <div class="spark" id="spark" aria-label="Equity curve"></div>
+  </section>
+
+  <section class="card next">
+    <div class="sechead"><div class="label">Next trade risk</div>${c.brake?`<span class="chip warn">Brake on · down ${pct(c.dd)}</span>`:`<span class="chip up">Brake off</span>`}</div>
+    <div class="big"><span class="num">${money(c.nextUsd)}</span><span style="color:var(--ink-2)">${cur} · ${c.nextPct.toFixed(2).replace(/\.?0+$/,"")}% of ${st.mode==="flat"?"starting capital":"balance"}</span></div>
+    <div>
+      <div class="kv"><span class="k">Drawdown from peak</span><span class="v num ${c.dd>0?"down":""}">${pct(c.dd)}</span></div>
+      <div class="kv"><span class="k">Open trades</span><span class="v num">${c.open.length} · ${money(c.openRisk)} at risk</span></div>
+    </div>
+  </section>
+
+  <section class="grid" aria-label="Performance">
+    <div class="stat"><span class="label">Win rate</span><span class="v num">${pct(c.winRate,0)}</span></div>
+    <div class="stat"><span class="label">Expectancy</span><span class="v num ${cls(c.expR)}">${R(c.expR)}</span></div>
+    <div class="stat"><span class="label">Profit factor</span><span class="v num">${pf}</span></div>
+    <div class="stat"><span class="label">Total</span><span class="v num ${cls(c.totalR)}">${R(c.n?c.totalR:null)}</span></div>
+    <div class="stat"><span class="label">Max DD</span><span class="v num">${pct(c.maxDD)}</span></div>
+    <div class="stat"><span class="label">Trades</span><span class="v num">${c.wins}W ${c.losses}L</span></div>
+  </section>
+
+  <section class="card">
+    <div class="sechead"><div class="label">Take-profit funnel</div><span class="label" style="text-transform:none;letter-spacing:0">${c.taggedN} closed</span></div>
+    <div class="funnel">
+      ${f.map((x,i)=>`<div class="frow"><span class="t">TP${i+1}</span>
+        <div class="bar" role="img" aria-label="TP${i+1} ${pct(x.rate,0)}"><i style="width:${x.rate==null?0:(x.rate*100).toFixed(1)}%"></i>${i===0&&be!=null?`<span class="be" style="left:calc(${(be*100).toFixed(1)}% - 1px)" title="Breakeven"></span>`:""}</div>
+        <span class="p num">${pct(x.rate,0)}</span></div>`).join("")}
+    </div>
+    <div class="note">TP1 is the share of closed trades that reached it. Each later TP is the share of trades that went on from the one before.${be!=null?` The tick on the TP1 bar marks breakeven (${pct(be,0)}).`:""}</div>
+    <div class="verdict">${verdict}</div>
+  </section>
+
+  <section class="card">
+    <div class="label">Same trades, both sizing methods</div>
+    <div class="cmp">
+      <div><span class="k" style="color:var(--ink-2);font-size:13px">Compound</span><span class="num ${st.mode!=="flat"?"on":""}">${money(c.comp.bal)}</span><span class="num" style="font-size:12.5px;color:var(--ink-3)">max DD ${pct(c.comp.dd)}</span></div>
+      <div><span class="k" style="color:var(--ink-2);font-size:13px">Flat</span><span class="num ${st.mode==="flat"?"on":""}">${money(c.flat.bal)}</span><span class="num" style="font-size:12.5px;color:var(--ink-3)">max DD ${pct(c.flat.dd)}</span></div>
+    </div>
+  </section>`;
+}
+
+function drawSpark(c){
+  const el=$("spark"); if(!el) return;
+  const pts=c.curve; const W=el.clientWidth||340, H=el.clientHeight||96, pad=6;
+  if(pts.length<2){ el.innerHTML=`<div style="color:var(--ink-3);font-size:13px;padding-top:30px">Your equity curve appears after the first closed trade.</div>`; return; }
+  const vals=pts.map(p=>p.bal); let lo=Math.min(...vals), hi=Math.max(...vals); if(hi===lo){hi+=1;lo-=1;}
+  const x=i=>pad+i*(W-2*pad)/(pts.length-1), y=v=>pad+(hi-v)*(H-2*pad)/(hi-lo);
+  const line=pts.map((p,i)=>`${i?"L":"M"}${x(i).toFixed(1)},${y(p.bal).toFixed(1)}`).join("");
+  const area=line+`L${x(pts.length-1).toFixed(1)},${H}L${x(0).toFixed(1)},${H}Z`;
+  const up = c.bal>=c.cap; const col = up? "var(--up)":"var(--down)";
+  const base=y(c.cap);
+  el.innerHTML=`<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
+    <defs><linearGradient id="ga" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="${up?"var(--up)":"var(--down)"}" stop-opacity=".18"/><stop offset="1" stop-color="${up?"var(--up)":"var(--down)"}" stop-opacity="0"/></linearGradient></defs>
+    <line x1="0" x2="${W}" y1="${base}" y2="${base}" stroke="var(--line)" stroke-dasharray="3 4" stroke-width="1"/>
+    <path d="${area}" fill="url(#ga)"/>
+    <path d="${line}" fill="none" stroke="${col}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+    <line id="hx" x1="0" x2="0" y1="0" y2="${H}" stroke="var(--ink-3)" stroke-width="1" visibility="hidden"/>
+    <circle id="hd" r="4" fill="${col}" stroke="var(--surface)" stroke-width="2" visibility="hidden"/>
+    <circle cx="${x(pts.length-1)}" cy="${y(c.bal)}" r="4.5" fill="${col}" stroke="var(--surface)" stroke-width="2"/>
+  </svg><div class="tip num" id="htip" hidden></div>`;
+  const svg=el.querySelector("svg"), hx=el.querySelector("#hx"), hd=el.querySelector("#hd"), tip=el.querySelector("#htip");
+  const move=ev=>{ const r=svg.getBoundingClientRect(); const cx=(ev.touches?ev.touches[0].clientX:ev.clientX)-r.left;
+    const i=Math.max(0,Math.min(pts.length-1,Math.round((cx/r.width*W-pad)/((W-2*pad)/(pts.length-1)))));
+    hx.setAttribute("x1",x(i)); hx.setAttribute("x2",x(i)); hx.setAttribute("visibility","visible");
+    hd.setAttribute("cx",x(i)); hd.setAttribute("cy",y(pts[i].bal)); hd.setAttribute("visibility","visible");
+    tip.hidden=false; tip.textContent=`${money(pts[i].bal)} · ${pts[i].label}`; tip.style.left=Math.max(60,Math.min(r.width-60,x(i)/W*r.width))+"px"; };
+  const out=()=>{ hx.setAttribute("visibility","hidden"); hd.setAttribute("visibility","hidden"); tip.hidden=true; };
+  svg.addEventListener("pointermove",move); svg.addEventListener("pointerdown",move); svg.addEventListener("pointerleave",out); svg.addEventListener("touchend",out);
+}
+
+function viewTrades(c){
+  let list=S.trades.slice().sort((a,b)=>(b.date||"").localeCompare(a.date||"")||b.created-a.created);
+  if(ui.filter==="open") list=list.filter(t=>!t.outcome);
+  if(ui.filter==="closed") list=list.filter(t=>t.outcome);
+  const seg=["all","open","closed"].map(k=>`<button data-filter="${k}" aria-pressed="${ui.filter===k}">${k==="all"?"All":k==="open"?`Open (${c.open.length})`:"Closed"}</button>`).join("");
+  const rows=list.map(t=>{
+    const res = t.outcome ? `<span class="r num ${cls(t._R)}">${R(t._R)}</span>` : `<span class="chip">Open</span>`;
+    const sub2 = t.outcome ? `<span class="sub rt num ${cls(t._pnl)}">${smoney(t._pnl)}</span>` : `<span class="sub rt num">risk ${money(t.riskUsd)}</span>`;
+    return `<button class="trow" data-open="${esc(t.id)}"><span class="pair"><span class="dir ${t.dir==="Short"?"S":"L"}">${t.dir==="Short"?"SHORT":"LONG"}</span>${esc(t.pair)}</span>${res}
+      <span class="sub num">${esc(t.date)} · ${t.outcome?esc(t.outcome):"@ "+price(t.entry)}</span>${sub2}</button>`;
+  }).join("");
+  return `${header()}${sampleBanner()}<div class="seg" role="group" aria-label="Filter trades">${seg}</div>
+    ${list.length? `<div class="list">${rows}</div>` : `<div class="card empty"><div>No trades here yet.</div><div style="font-size:13.5px">Tap <b>+ New trade</b>, enter entry and stop loss, and the app sizes the position for you.</div></div>`}`;
+}
+
+function viewSettings(){
+  const st=S.settings;
+  const tpSum=st.tps.reduce((s,t)=>s+Number(t.pct||0),0);
+  return `${header()}
+  <section class="card form">
+    <div class="label">Account</div>
+    <div class="two">
+      <div class="field"><label for="s-capital">Starting capital</label><input id="s-capital" class="num" inputmode="decimal" value="${st.capital}"></div>
+      <div class="field"><label for="s-currency">Currency</label><input id="s-currency" value="${esc(st.currency)}"></div>
+    </div>
+    <div class="two">
+      <div class="field"><label for="s-risk">Risk per trade (%)</label><input id="s-risk" class="num" inputmode="decimal" value="${st.riskPct}"></div>
+      <div class="field"><label>Sizing</label><div class="seg" id="s-mode"><button data-mode="compound" aria-pressed="${st.mode!=="flat"}">Compound</button><button data-mode="flat" aria-pressed="${st.mode==="flat"}">Flat</button></div></div>
+    </div>
+    <div class="field"><span class="hint">Compound risks a % of your current balance. Flat risks a % of starting capital every time.</span></div>
+  </section>
+
+  <section class="card form">
+    <div class="label">Drawdown brake</div>
+    <div class="two">
+      <div class="field"><label for="s-dd">Trigger (% below peak)</label><input id="s-dd" class="num" inputmode="decimal" value="${st.brakeDD}"></div>
+      <div class="field"><label for="s-mult">Risk while on (%)</label><input id="s-mult" class="num" inputmode="decimal" value="${st.brakeMult}"></div>
+    </div>
+    <span class="hint" style="font-size:12.5px;color:var(--ink-3)">At 50%, a 3% risk becomes 1.5% until the balance makes a new high.</span>
+  </section>
+
+  <section class="card form">
+    <div class="label">Take-profit plan</div>
+    <div class="tps"><span></span><span class="h">Target (R)</span><span class="h">Close (%)</span>
+      ${st.tps.map((t,i)=>`<b>TP${i+1}</b><input id="s-tpr${i}" inputmode="decimal" value="${t.r}" aria-label="TP${i+1} R"><input id="s-tpp${i}" inputmode="decimal" value="${t.pct}" aria-label="TP${i+1} close percent">`).join("")}
+    </div>
+    <div id="tpwarn" class="err" ${Math.round(tpSum)===100?"hidden":""}>Close % adds up to ${tpSum}%. It should be 100%.</div>
+    <span class="hint" style="font-size:12.5px;color:var(--ink-3)">1R is the distance from entry to stop loss. After TP1 the rest is assumed to exit at breakeven if price comes back.</span>
+  </section>
+
+  <section class="card form">
+    <div class="label">Your data</div>
+    <div class="two"><button class="btn ghost" data-act="exportCsv">Export CSV</button><button class="btn ghost" data-act="backup">Back up</button></div>
+    <button class="btn ghost" data-act="restore">Restore from backup</button>
+    <div id="dangerZone"><button class="btn danger" data-act="askReset">Delete all trades</button></div>
+    <span class="hint" style="font-size:12.5px;color:var(--ink-3)">${Native?"Trades are saved on this phone.":"In this preview, trades are saved in this browser only."}</span>
+  </section>`;
+}
+
+function bindSettings(){
+  const st=S.settings;
+  const num=(id,key,min)=>{ const el=$(id); el.addEventListener("input",()=>{ const v=parseFloat(el.value); if(isFinite(v)&&v>=(min||0)){ st[key]=v; persist(); }}); el.addEventListener("change",render); };
+  num("s-capital","capital",0); num("s-risk","riskPct",0); num("s-dd","brakeDD",0); num("s-mult","brakeMult",0);
+  $("s-currency").addEventListener("change",e=>{ st.currency=(e.target.value||"USDT").trim().toUpperCase().slice(0,8); persist(); render(); });
+  st.tps.forEach((t,i)=>{
+    [["s-tpr"+i,"r"],["s-tpp"+i,"pct"]].forEach(([id,k])=>{ const el=$(id);
+      el.addEventListener("input",()=>{ const v=parseFloat(el.value); if(isFinite(v)&&v>=0){ t[k]=v; persist(); const s=st.tps.reduce((a,b)=>a+Number(b.pct||0),0); const w=$("tpwarn"); w.hidden=Math.round(s)===100; w.textContent=`Close % adds up to ${s}%. It should be 100%.`; }});
+    });
+  });
+}
+
+/* ---------- sheets ---------- */
+function openSheet(html){ $("sheetBody").innerHTML=html; $("sheet").hidden=false; $("sheet").scrollTop=0; document.body.style.overflow="hidden"; }
+function closeSheet(){ $("sheet").hidden=true; ui.sheet=null; document.body.style.overflow=""; render(); }
+
+function newTradeSheet(){
+  const c=compute(S.settings,S.trades);
+  ui.sheet={kind:"new", dir:"Long"};
+  openSheet(`<header><h2>New trade</h2><button class="x" data-act="close" aria-label="Close">×</button></header>
+  <form id="ntf" class="form" novalidate>
+    <div class="two">
+      <div class="field"><label for="n-pair">Pair</label><input id="n-pair" placeholder="BTCUSDT" autocapitalize="characters" autocomplete="off"></div>
+      <div class="field"><label for="n-date">Date</label><input id="n-date" type="date" value="${todayStr()}"></div>
+    </div>
+    <div class="field"><label>Direction</label><div class="seg" id="n-dir"><button type="button" data-dir="Long" aria-pressed="true">Long</button><button type="button" data-dir="Short" aria-pressed="false">Short</button></div></div>
+    <div class="two">
+      <div class="field" id="f-entry"><label for="n-entry">Entry price</label><input id="n-entry" class="num" inputmode="decimal" placeholder="0.00"></div>
+      <div class="field" id="f-sl"><label for="n-sl">Stop loss</label><input id="n-sl" class="num" inputmode="decimal" placeholder="0.00"></div>
+    </div>
+    <div class="field"><label for="n-risk">Risk (${esc(S.settings.currency)})</label><input id="n-risk" class="num" inputmode="decimal" value="${c.nextUsd.toFixed(2)}">
+      <span class="hint">${c.nextPct.toFixed(2).replace(/\.?0+$/,"")}% of ${S.settings.mode==="flat"?"starting capital":"balance"}${c.brake?" · drawdown brake on":""}. You can change it.</span></div>
+    <div class="card preview" id="n-prev"></div>
+    <div class="field"><label for="n-note">Note (optional)</label><input id="n-note" placeholder="Setup, timeframe, reason"></div>
+    <div id="n-err" class="err" hidden></div>
+    <button class="btn" type="submit">Save open trade</button>
+  </form>`);
+  const upd=()=>updatePreview(c);
+  ["n-entry","n-sl","n-risk"].forEach(id=>$(id).addEventListener("input",upd));
+  $("n-dir").addEventListener("click",e=>{ const b=e.target.closest("button"); if(!b) return; ui.sheet.dir=b.dataset.dir; $("n-dir").querySelectorAll("button").forEach(x=>x.setAttribute("aria-pressed",String(x===b))); upd(); });
+  $("ntf").addEventListener("submit",e=>{ e.preventDefault(); saveNew(); });
+  upd();
+}
+function readNew(){
+  const entry=parseFloat($("n-entry").value), sl=parseFloat($("n-sl").value), risk=parseFloat($("n-risk").value), dir=ui.sheet.dir;
+  let err="";
+  if(!(entry>0)) err="Enter the entry price.";
+  else if(!(sl>0)) err="Enter the stop-loss price.";
+  else if(dir==="Long" && sl>=entry) err="For a long, the stop loss must be below entry.";
+  else if(dir==="Short" && sl<=entry) err="For a short, the stop loss must be above entry.";
+  else if(!(risk>0)) err="Enter how much you are risking.";
+  return {entry,sl,risk,dir,err};
+}
+function updatePreview(c){
+  const v=readNew(); const box=$("n-prev");
+  $("f-entry").classList.toggle("bad", v.err.includes("entry")&&$("n-entry").value!=="");
+  $("f-sl").classList.toggle("bad", v.err.includes("stop")&&$("n-sl").value!=="");
+  if(v.err){ box.innerHTML=`<div class="label">Position</div><div class="note" style="margin-top:8px">Enter entry and stop loss to size the position.</div>`; return; }
+  const dist=Math.abs(v.entry-v.sl), size=v.risk/dist, value=size*v.entry, lev=c.bal>0? value/c.bal : 0;
+  box.innerHTML=`<div class="label">Position</div>
+    <div class="kv" style="margin-top:6px"><span class="k">Size</span><span class="v">${units(size)} units</span></div>
+    <div class="kv"><span class="k">Position value</span><span class="v">${money(value)}</span></div>
+    <div class="kv"><span class="k">Stop distance</span><span class="v">${(dist/v.entry*100).toFixed(2)}%</span></div>
+    <div class="kv"><span class="k">Value ÷ balance</span><span class="v">${lev.toFixed(1)}x</span></div>
+    <div class="tplist">${S.settings.tps.map((t,i)=>`<div><span class="label">TP${i+1} · ${t.r}R</span><span class="num">${price(tpPrice(v.entry,v.sl,v.dir,t.r))}</span></div>`).join("")}</div>`;
+}
+function saveNew(){
+  const v=readNew(); const e=$("n-err");
+  if(v.err){ e.hidden=false; e.textContent=v.err; return; }
+  const bal=compute(S.settings,S.trades);
+  const pair=($("n-pair").value||"").trim().toUpperCase()||"—";
+  S.trades.push({id:uid(), created:Date.now(), date:$("n-date").value||todayStr(), pair, dir:v.dir, entry:v.entry, sl:v.sl,
+    riskPct: bal.bal>0? +(v.risk/(S.settings.mode==="flat"?bal.cap:bal.bal)*100).toFixed(3) : 0, riskUsd:+v.risk.toFixed(2),
+    outcome:null, manualR:null, fees:0, note:($("n-note").value||"").trim(), closedAt:null});
+  persist(); ui.tab="trades"; ui.filter="all"; closeSheet(); toast("Trade saved");
+}
+
+function tradeSheet(id){
+  const t=S.trades.find(x=>x.id===id); if(!t) return;
+  ui.sheet={kind:"trade", id, outcome:t.outcome, confirmDel:false};
+  const st=S.settings, size=t.riskUsd/Math.abs(t.entry-t.sl);
+  const outBtns=OUTS.concat(["Manual"]).map(o=>`<button type="button" data-out="${o}" aria-pressed="${t.outcome===o}">${o}<small>${o==="Manual"?"custom":R(rFor(o,0,st))}</small></button>`).join("");
+  openSheet(`<header><h2><span class="dir ${t.dir==="Short"?"S":"L"}" style="vertical-align:3px">${t.dir==="Short"?"SHORT":"LONG"}</span> ${esc(t.pair)}</h2><button class="x" data-act="close" aria-label="Close">×</button></header>
+  <section class="card preview">
+    <div class="kv"><span class="k">Date</span><span class="v">${esc(t.date)}</span></div>
+    <div class="kv"><span class="k">Entry · Stop</span><span class="v">${price(t.entry)} · ${price(t.sl)}</span></div>
+    <div class="kv"><span class="k">Risk</span><span class="v">${money(t.riskUsd)} ${esc(st.currency)}</span></div>
+    <div class="kv"><span class="k">Size</span><span class="v">${units(size)} units</span></div>
+    <div class="tplist">${st.tps.map((x,i)=>`<div><span class="label">TP${i+1}</span><span class="num">${price(tpPrice(t.entry,t.sl,t.dir,x.r))}</span></div>`).join("")}</div>
+    ${t.note?`<div class="note">${esc(t.note)}</div>`:""}
+  </section>
+  <form id="cf" class="form" novalidate>
+    <div class="label">${t.outcome?"Result":"Close the trade"}</div>
+    <div class="outs" id="c-outs">${outBtns}</div>
+    <div class="field" id="f-man" ${t.outcome==="Manual"?"":"hidden"}><label for="c-man">Result in R</label><input id="c-man" class="num" inputmode="decimal" placeholder="e.g. 1.3 or -0.5" value="${t.manualR??""}"><span class="hint">For trailed stops or early exits.</span></div>
+    <div class="field"><label for="c-fee">Fees (${esc(st.currency)})</label><input id="c-fee" class="num" inputmode="decimal" value="${t.fees||0}"></div>
+    <div class="card" id="c-res" style="padding:12px 16px"></div>
+    <div id="c-err" class="err" hidden></div>
+    <button class="btn" type="submit">${t.outcome?"Update result":"Close trade"}</button>
+    ${t.outcome?`<button class="btn ghost" type="button" data-act="reopen">Mark as open again</button>`:""}
+    <div id="delZone"><button class="btn danger" type="button" data-act="askDel">Delete trade</button></div>
+  </form>`);
+  const upd=()=>{ const o=ui.sheet.outcome; const box=$("c-res");
+    if(!o){ box.innerHTML=`<span class="note" style="margin:0">Pick where the trade ended.</span>`; return; }
+    const r=rFor(o,$("c-man").value,st), fee=parseFloat($("c-fee").value)||0, pnl=r*t.riskUsd-fee;
+    box.innerHTML=`<div class="kv"><span class="k">Result</span><span class="v num ${cls(r)}">${R(r)}</span></div><div class="kv"><span class="k">P&amp;L after fees</span><span class="v num ${cls(pnl)}">${smoney(pnl)}</span></div>`; };
+  $("c-outs").addEventListener("click",e=>{ const b=e.target.closest("button"); if(!b) return; ui.sheet.outcome=b.dataset.out;
+    $("c-outs").querySelectorAll("button").forEach(x=>x.setAttribute("aria-pressed",String(x===b))); $("f-man").hidden=b.dataset.out!=="Manual"; upd(); });
+  $("c-man").addEventListener("input",upd); $("c-fee").addEventListener("input",upd);
+  $("cf").addEventListener("submit",e=>{ e.preventDefault(); const o=ui.sheet.outcome, err=$("c-err");
+    if(!o){ err.hidden=false; err.textContent="Pick an outcome first."; return; }
+    if(o==="Manual" && !isFinite(parseFloat($("c-man").value))){ err.hidden=false; err.textContent="Enter the result in R, for example 1.3 or -0.5."; return; }
+    t.outcome=o; t.manualR = o==="Manual"? parseFloat($("c-man").value) : null; t.fees=parseFloat($("c-fee").value)||0; if(!t.closedAt) t.closedAt=Date.now();
+    persist(); closeSheet(); toast("Result saved"); });
+  upd();
+}
+
+/* ---------- import / export ---------- */
+function shareOrShow(title, text, filename){
+  if(Native && Native.share){ try{ Native.share(title, text); return; }catch(e){} }
+  openSheet(`<header><h2>${esc(title)}</h2><button class="x" data-act="close" aria-label="Close">×</button></header>
+    <div class="form"><div class="field"><label for="io-out">${esc(filename)}</label><textarea id="io-out" class="io" readonly>${esc(text)}</textarea></div>
+    <button class="btn" data-act="copyOut">Copy</button></div>`);
+  ui.sheet={kind:"io"};
+}
+function csv(){
+  const c=compute(S.settings,S.trades);
+  const head=["date","pair","direction","entry","stop_loss","risk","outcome","r_result","fees","pnl","note"];
+  const q=v=>{ const s=String(v==null?"":v); return /[",\n]/.test(s)? '"'+s.replace(/"/g,'""')+'"' : s; };
+  const rows=S.trades.slice().sort((a,b)=>a.created-b.created).map(t=>[t.date,t.pair,t.dir,t.entry,t.sl,t.riskUsd,t.outcome||"Open",t.outcome?t._R.toFixed(3):"",t.fees||0,t.outcome?t._pnl.toFixed(2):"",t.note].map(q).join(","));
+  return head.join(",")+"\n"+rows.join("\n");
+}
+function restoreSheet(){
+  ui.sheet={kind:"io"};
+  openSheet(`<header><h2>Restore</h2><button class="x" data-act="close" aria-label="Close">×</button></header>
+    <div class="form"><div class="field"><label for="io-in">Paste your backup text</label><textarea id="io-in" class="io" placeholder='{"settings":…,"trades":[…]}'></textarea><span class="hint">This replaces everything currently in the app.</span></div>
+    <div id="io-err" class="err" hidden></div><button class="btn" data-act="doRestore">Restore</button></div>`);
+}
+
+/* ---------- events ---------- */
+let toastT;
+function toast(m){ const t=$("toast"); t.textContent=m; t.hidden=false; clearTimeout(toastT); toastT=setTimeout(()=>t.hidden=true,1800); }
+
+document.addEventListener("click",e=>{
+  const tab=e.target.closest("nav.tabs button"); if(tab){ ui.tab=tab.dataset.tab; window.scrollTo(0,0); render(); return; }
+  const f=e.target.closest("[data-filter]"); if(f){ ui.filter=f.dataset.filter; render(); return; }
+  const m=e.target.closest("[data-mode]"); if(m){ S.settings.mode=m.dataset.mode; persist(); render(); return; }
+  const o=e.target.closest("[data-open]"); if(o){ tradeSheet(o.dataset.open); return; }
+  const a=e.target.closest("[data-act]"); if(!a) return;
+  const act=a.dataset.act;
+  if(act==="close") closeSheet();
+  else if(act==="clearSample"){ S={settings:S.settings, trades:[], sample:false}; persist(); render(); toast("Sample trades cleared"); }
+  else if(act==="reopen"){ const t=S.trades.find(x=>x.id===ui.sheet.id); t.outcome=null; t.manualR=null; t.closedAt=null; persist(); closeSheet(); toast("Trade reopened"); }
+  else if(act==="askDel"){ $("delZone").innerHTML=`<div class="confirm"><button class="btn ghost" type="button" data-act="close">Keep it</button><button class="btn danger" type="button" data-act="doDel">Yes, delete</button></div>`; }
+  else if(act==="doDel"){ S.trades=S.trades.filter(x=>x.id!==ui.sheet.id); persist(); closeSheet(); toast("Trade deleted"); }
+  else if(act==="askReset"){ $("dangerZone").innerHTML=`<div class="confirm"><button class="btn ghost" data-act="cancelReset">Cancel</button><button class="btn danger" data-act="doReset">Delete everything</button></div>`; }
+  else if(act==="cancelReset") render();
+  else if(act==="doReset"){ S={settings:S.settings, trades:[], sample:false}; persist(); render(); toast("All trades deleted"); }
+  else if(act==="exportCsv") shareOrShow("Export CSV", csv(), "risk-ledger.csv");
+  else if(act==="backup") shareOrShow("Back up", JSON.stringify({app:"risk-ledger",v:1,settings:S.settings,trades:S.trades.map(({_R,_pnl,...t})=>t)}), "Keep this text somewhere safe");
+  else if(act==="restore") restoreSheet();
+  else if(act==="doRestore"){ const err=$("io-err"); try{ const o=JSON.parse($("io-in").value); if(!o.settings||!Array.isArray(o.trades)) throw 0; S={settings:Object.assign(clone(DEF),o.settings), trades:o.trades, sample:false}; persist(); closeSheet(); ui.tab="dash"; render(); toast("Backup restored"); }catch(x){ err.hidden=false; err.textContent="That text isn't a Risk Ledger backup. Copy the whole backup and try again."; } }
+  else if(act==="copyOut"){ const ta=$("io-out"); const done=()=>toast("Copied"); try{ navigator.clipboard.writeText(ta.value).then(done,()=>{ta.select();toast("Text selected. Copy it from here.");}); }catch(x){ ta.select(); } }
+});
+$("fab").addEventListener("click",newTradeSheet);
+window.addEventListener("resize",()=>{ if(ui.tab==="dash" && $("sheet").hidden) drawSpark(compute(S.settings,S.trades)); });
+// Android back button: close a sheet, then return to the dashboard, then exit
+window.appBack=function(){ if(!$("sheet").hidden){ closeSheet(); return true; } if(ui.tab!=="dash"){ ui.tab="dash"; render(); return true; } return false; };
+
+S=load(); if(!loadRaw()) persist();
+render();
+</script>
