@@ -183,7 +183,7 @@ function saveRaw(s){ try{ if(Native) Native.save(s); else localStorage.setItem(K
 
 const DEF = { capital:1000, currency:"USDT", riskPct:3, mode:"compound", brakeDD:15, brakeMult:50,
   tps:[{r:1,pct:25},{r:2,pct:25},{r:3,pct:25},{r:4,pct:25}],
-  theme:"system", secondCur:"PHP", secondRate:null, rateAt:null, rateSrc:"p2pBuy", p2p:null, exchange:"mexc", market:"futures", useExBal:false };
+  theme:"system", secondCur:"PHP", secondRate:null, rateAt:null, rateSrc:"p2pBuy", p2p:null, exchange:"mexc", market:"futures", useExBal:false, balScope:"futures", capitalFrom:null };
 let S; // {settings, trades, sample}
 let ui = { tab:"dash", filter:"all", sheet:null };
 
@@ -308,15 +308,17 @@ async function fetchAccount(ex){
   const px = await usdtPrices(ex);
   if(ex==="binance"){
     // All wallets at once: Spot, Funding, Futures, Earn, Margin, Bots… (reported in BTC)
+    // USDT-M futures in exact USDT: wallet balance and equity (wallet + open P&L)
+    await tryPart("Futures", async()=>{ const j=JSON.parse(await privateGet(ex,"futAccount")); out.futEq=num(j.totalMarginBalance); out.futWallet=num(j.totalWalletBalance); });
+    const futExact = out.futEq;
     const okW = await tryPart("Wallets", async()=>{ const j=JSON.parse(await privateGet(ex,"wallets"));
       const btc = px.BTC || await livePrice("binance","spot","BTCUSDT");
       out.wallets=(Array.isArray(j)?j:[]).map(w=>({name:String(w.walletName||"").replace(/USDⓈ-M/,"USDT-M"), usdt:num(w.balance)*btc})).filter(w=>w.usdt>=0.01);
       out.total=out.wallets.reduce((s,w)=>s+w.usdt,0);
       const sp=out.wallets.find(w=>/^spot$/i.test(w.name)); out.spot=sp?sp.usdt:0;
-      const fu=out.wallets.find(w=>/USDT-M/i.test(w.name)); out.futEq=fu?fu.usdt:0; });
+      const fu=out.wallets.find(w=>/USDT-M/i.test(w.name)); if(futExact==null) out.futEq=fu?fu.usdt:0; });
     if(!okW){ // fallback: spot coins + USDT-M futures
       await tryPart("Spot", async()=>{ const j=JSON.parse(await privateGet(ex,"spot")); out.spot=(j.balances||[]).reduce((s,b)=>s+valueOf(b.asset, num(b.free)+num(b.locked), px),0); });
-      await tryPart("Futures", async()=>{ const j=JSON.parse(await privateGet(ex,"futAccount")); out.futEq=num(j.totalMarginBalance); });
       out.wallets=[{name:"Spot",usdt:out.spot||0},{name:"USDT-M Futures",usdt:out.futEq||0}].filter(w=>w.usdt>=0.01);
       out.total=(out.spot||0)+(out.futEq||0);
     }
@@ -326,7 +328,8 @@ async function fetchAccount(ex){
     await tryPart("Spot", async()=>{ const j=JSON.parse(await privateGet(ex,"spot"));
       out.spot=(j.balances||[]).reduce((s,b)=>{ const q=num(b.free)+num(b.locked); if(q>0 && !STABLE.has(b.asset) && !px[b.asset]) out.unpriced.push(b.asset); return s+valueOf(b.asset,q,px); },0); });
     await tryPart("Futures", async()=>{ const j=JSON.parse(await privateGet(ex,"futAssets")); if(j.success===false) throw new Error(j.message||("code "+j.code));
-      out.futEq=(j.data||[]).reduce((s,a)=>s+valueOf(a.currency, num(a.equity), px),0); });
+      out.futEq=(j.data||[]).reduce((s,a)=>s+valueOf(a.currency, num(a.equity), px),0);
+      out.futWallet=(j.data||[]).reduce((s,a)=>s+valueOf(a.currency, num(a.equity)-num(a.unrealized), px),0); });
     out.wallets=[{name:"Spot",usdt:out.spot||0},{name:"Futures",usdt:out.futEq||0}].filter(w=>w.usdt>=0.01);
     out.total=(out.spot||0)+(out.futEq||0);
     await tryPart("Positions", async()=>{ const j=JSON.parse(await privateGet(ex,"positions")); if(j.success===false) throw new Error(j.message||("code "+j.code));
@@ -340,7 +343,17 @@ async function fetchAccount(ex){
   return out;
 }
 const accounts = () => (typeof S!=="undefined" && S && S.accounts) || {};
-const acctTotal = a => a.total!=null ? a.total : (a.spot||0) + (a.futEq||0);
+const futuresOnly = () => !(typeof S!=="undefined" && S && S.settings.balScope==="all");
+const acctTotal = a => futuresOnly() ? (a.futEq||0) : (a.total!=null ? a.total : (a.spot||0) + (a.futEq||0));
+const connectedEx = () => ACCT_EX.filter(k=>accounts()[k] && keyInfo(k));
+// Futures wallet balance across connected exchanges (excludes open-position P&L), used as starting capital
+function futWalletTotal(){ const a=accounts(), l=connectedEx(); return l.length ? l.reduce((s,k)=>s+(a[k].futWallet!=null? a[k].futWallet : (a[k].futEq||0)),0) : null; }
+function setCapitalFromExchange(){
+  const v=futWalletTotal(); if(!(v>0)) return false;
+  S.settings.capital=+v.toFixed(2);
+  S.settings.capitalFrom=connectedEx().map(k=>EX[k].name).join(" + ")+" futures · "+new Date().toLocaleDateString();
+  persist(); return true;
+}
 function exTotal(){ const a=accounts(); const list=ACCT_EX.filter(k=>a[k] && keyInfo(k)); return list.length ? list.reduce((s,k)=>s+acctTotal(a[k]),0) : null; }
 async function syncAccounts(){
   S.accounts = S.accounts || {}; const res=[];
@@ -571,11 +584,11 @@ function exAcctCard(){
   const tot=list.reduce((s,k)=>s+acctTotal(a[k]),0), pos=list.reduce((s,k)=>s+(a[k].positions||[]).length,0);
   const at=Math.max(...list.map(k=>a[k].at||0));
   return `<section class="card next">
-    <div class="sechead"><div class="label">Exchange balance</div><button class="linkbtn" data-act="syncAcct">Refresh</button></div>
+    <div class="sechead"><div class="label">${futuresOnly()?"Futures balance":"Exchange balance"}</div><button class="linkbtn" data-act="syncAcct">Refresh</button></div>
     <div class="big"><span class="num">${money(tot)}</span><span style="color:var(--ink-2)">${esc(S.settings.currency)}${hasSec()?" · "+secTxt(tot):""}</span></div>
-    <div>${list.map(k=>`<div class="kv"><span class="k">${EX[k].name}</span><span class="v num">${money(acctTotal(a[k]))}<br><span style="font-size:12px;color:var(--ink-3)">${(a[k].wallets&&a[k].wallets.length? a[k].wallets : [{name:"Spot",usdt:a[k].spot||0},{name:"Futures",usdt:a[k].futEq||0}]).map(w=>`${esc(w.name)} ${money(w.usdt)}`).join(" · ")}</span></span></div>`).join("")}
+    <div>${list.map(k=>`<div class="kv"><span class="k">${EX[k].name}</span><span class="v num">${money(acctTotal(a[k]))}<br><span style="font-size:12px;color:var(--ink-3)">${futuresOnly()?`wallet ${money(a[k].futWallet??a[k].futEq??0)} · open P&amp;L ${smoney((a[k].futEq||0)-(a[k].futWallet??a[k].futEq??0))}`:(a[k].wallets&&a[k].wallets.length? a[k].wallets : [{name:"Spot",usdt:a[k].spot||0},{name:"Futures",usdt:a[k].futEq||0}]).map(w=>`${esc(w.name)} ${money(w.usdt)}`).join(" · ")}</span></span></div>`).join("")}
     <div class="kv"><span class="k">Open positions</span><span class="v num">${pos}</span></div></div>
-    <span class="hint" style="font-size:12.5px;color:var(--ink-3)">All coins in all wallets, valued in USDT · updated ${new Date(at).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"})}</span>
+    <span class="hint" style="font-size:12.5px;color:var(--ink-3)">${futuresOnly()?"USDT-M futures, including open P&amp;L":"All coins in all wallets, valued in USDT"} · updated ${new Date(at).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"})}</span>
   </section>`;
 }
 
@@ -699,6 +712,8 @@ function viewSettings(){
       <div class="field"><label>Sizing</label><div class="seg" id="s-mode"><button data-mode="compound" aria-pressed="${st.mode!=="flat"}">Compound</button><button data-mode="flat" aria-pressed="${st.mode==="flat"}">Flat</button></div></div>
     </div>
     <div class="field"><span class="hint">Compound risks a % of your current balance. Flat risks a % of starting capital every time.</span></div>
+    ${connectedEx().length?`<button class="btn ghost" data-act="capFromEx">Use my futures balance: ${money(futWalletTotal()||0)} ${esc(st.currency)}</button>`:""}
+    ${st.capitalFrom?`<span class="hint" style="font-size:12.5px;color:var(--ink-3)">Starting capital taken from ${esc(st.capitalFrom)}. Open-position P&amp;L isn't included.</span>`:""}
   </section>
 
   <section class="card form">
@@ -722,6 +737,7 @@ function viewSettings(){
     <div class="label">Exchange accounts</div>
     ${ACCT_EX.map(k=>{ const ki=keyInfo(k), a=accounts()[k]; return `<div class="acct"><div><div class="n">${EX[k].name}</div><div class="s">${ki?`Connected · key ${esc(ki)}${a?` · ${money(acctTotal(a))} ${esc(st.currency)}`:""}`:"Not connected"}</div></div>
       ${ki?`<button class="btn ghost sm" data-act="disconnect" data-ex="${k}">Disconnect</button>`:`<button class="btn sm" data-act="connect" data-ex="${k}">Connect</button>`}</div>`; }).join("")}
+    <div class="field"><label>Count as exchange balance</label><div class="seg" id="s-scope"><button data-scope="futures" aria-pressed="${st.balScope!=="all"}">Futures only</button><button data-scope="all" aria-pressed="${st.balScope==="all"}">All wallets</button></div></div>
     <label class="toggle" for="s-useex"><span>Size trades from exchange balance<br><span class="hint" style="font-size:12.5px;color:var(--ink-3)">Compound mode uses your real USDT balance instead of the log's balance.</span></span><input type="checkbox" id="s-useex" ${st.useExBal?"checked":""}></label>
     <span class="hint" style="font-size:12.5px;color:var(--ink-3)">${Native?"Read-only. Keys are encrypted on this phone and never included in backups.":"Exchange accounts work in the Android app."}</span>
   </section>
@@ -765,12 +781,13 @@ function viewSettings(){
 function bindSettings(){
   const st=S.settings;
   const num=(id,key,min)=>{ const el=$(id); el.addEventListener("input",()=>{ const v=parseFloat(el.value); if(isFinite(v)&&v>=(min||0)){ st[key]=v; persist(); }}); el.addEventListener("change",render); };
-  num("s-capital","capital",0); num("s-risk","riskPct",0); num("s-dd","brakeDD",0); num("s-mult","brakeMult",0);
+  num("s-capital","capital",0); $("s-capital").addEventListener("input",()=>{ st.capitalFrom=null; }); num("s-risk","riskPct",0); num("s-dd","brakeDD",0); num("s-mult","brakeMult",0);
   $("s-currency").addEventListener("change",e=>{ st.currency=(e.target.value||"USDT").trim().toUpperCase().slice(0,8); st.secondRate=null; st.rateAt=null; persist(); render(); });
   $("s-sec").addEventListener("change",e=>{ st.secondCur=(e.target.value||"").trim().toUpperCase().replace(/[^A-Z]/g,"").slice(0,5); st.secondRate=null; st.rateAt=null; persist(); render(); if(st.secondCur) doUpdateRate(); });
   $("s-rate").addEventListener("change",e=>{ const v=parseFloat(e.target.value); st.secondRate = v>0 ? v : null; st.rateAt=null; persist(); render(); });
   $("s-ex").addEventListener("change",e=>{ st.exchange=e.target.value; persist(); });
   $("s-useex").addEventListener("change",e=>{ st.useExBal=e.target.checked; persist(); });
+  $("s-scope").addEventListener("click",e=>{ const b=e.target.closest("button"); if(!b) return; st.balScope=b.dataset.scope; persist(); render(); });
   if($("s-src")) $("s-src").addEventListener("click",e=>{ const b=e.target.closest("button"); if(!b) return; st.rateSrc=b.dataset.src; persist(); render(); doUpdateRate(); });
   $("s-mkt").addEventListener("click",e=>{ const b=e.target.closest("button"); if(!b) return; st.market=b.dataset.mkt; persist(); render(); });
   $("s-theme").addEventListener("click",e=>{ const b=e.target.closest("button"); if(!b) return; st.theme=b.dataset.themeSet; persist(); applyTheme(); render(); });
@@ -929,7 +946,9 @@ async function saveKeyFlow(){
   const err=Native.saveKeys(ex,$("k-key").value,$("k-sec").value); if(err) return show(err);
   btn.disabled=true; show("Checking with "+EX[ex].name+"…",true);
   try{ const a=await fetchAccount(ex); S.accounts=S.accounts||{}; S.accounts[ex]=a; persist();
-    closeSheet(); toast(`${EX[ex].name} connected · ${money(acctTotal(a))} ${S.settings.currency}`); }
+    const fresh = S.sample || !S.trades.length;
+    if(fresh && setCapitalFromExchange()){ if(S.sample){ S.trades=[]; S.sample=false; persist(); } }
+    closeSheet(); toast(fresh && S.settings.capitalFrom ? `${EX[ex].name} connected · starting capital ${money(S.settings.capital)} ${S.settings.currency}` : `${EX[ex].name} connected · futures ${money(a.futEq||0)} ${S.settings.currency}`); }
   catch(e){ Native.removeKeys(ex); btn.disabled=false; show(apiErr(e)); }
 }
 
@@ -981,6 +1000,7 @@ document.addEventListener("click",e=>{
   else if(act==="restore") restoreSheet();
   else if(act==="updRate") doUpdateRate();
   else if(act==="refreshUsdt") refreshUsdt();
+  else if(act==="capFromEx"){ toast("Getting your futures balance…"); syncAccounts().then(()=>{ if(setCapitalFromExchange()){ render(); toast(`Starting capital set to ${money(S.settings.capital)} ${S.settings.currency}`); } else toast("Your futures balance is 0. Transfer funds to futures or type the capital yourself."); }); }
   else if(act==="connect") connectSheet(a.dataset.ex);
   else if(act==="saveKey") saveKeyFlow();
   else if(act==="disconnect"){ if(Native&&Native.removeKeys) Native.removeKeys(a.dataset.ex); if(S.accounts) delete S.accounts[a.dataset.ex]; persist(); render(); toast(EX[a.dataset.ex].name+" disconnected"); }
