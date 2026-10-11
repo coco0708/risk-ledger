@@ -224,7 +224,7 @@ const EX = {
     spot:{ api:(b,q)=>`https://api.gateio.ws/api/v4/spot/tickers?currency_pair=${b}_${q}`, pick:j=>j[0].last, link:(b,q)=>`https://www.gate.io/trade/${b}_${q}` },
     futures:{ api:(b,q)=>`https://api.gateio.ws/api/v4/futures/${lc(q)}/tickers?contract=${b}_${q}`, pick:j=>j[0].last, link:(b,q)=>`https://www.gate.io/futures/${q}/${b}_${q}` } },
 };
-const EX_ORDER = ["mexc","binance","bybit","okx","bitget","kucoin","gate"];
+const EX_ORDER = ["mexc"]; // MEXC only
 // Every pair on an exchange with its last price, as [symbol, price] rows.
 const ALL = {
   mexc:   { spot:["https://api.mexc.com/api/v3/ticker/price", j=>j.map(x=>[x.symbol,x.price])],
@@ -310,7 +310,7 @@ async function refreshP2P(){
 }
 
 /* ---------- exchange accounts (read-only API keys; signing happens in the Android app) ---------- */
-const ACCT_EX = ["mexc","binance"];
+const ACCT_EX = ["mexc"];
 const keyInfo = ex => { try{ return Native && Native.keyInfo ? (Native.keyInfo(ex)||"") : ""; }catch(e){ return ""; } };
 const num = v => { const n=parseFloat(v); return isFinite(n)? n : 0; };
 function apiErr(e){ const m=String(e&&e.message||e);
@@ -353,8 +353,6 @@ async function fetchAccount(ex){
         arr.forEach(o=>orders.push({sym:o.symbol, type:String(o.orderType||o.type||""), price:num(o.triggerPrice)||num(o.stopPrice)||num(o.price), side:o.side, posSide:o.positionSide, reduce:true})); });
       attachOrders(out.positions, orders); }
   } else if(ex==="mexc"){
-    await tryPart("Spot", async()=>{ const j=JSON.parse(await privateGet(ex,"spot"));
-      out.spot=(j.balances||[]).reduce((s,b)=>{ const q=num(b.free)+num(b.locked); if(q>0 && !STABLE.has(b.asset) && !px[b.asset]) out.unpriced.push(b.asset); return s+valueOf(b.asset,q,px); },0); });
     await tryPart("Futures", async()=>{ const j=JSON.parse(await privateGet(ex,"futAssets")); if(j.success===false) throw new Error(j.message||("code "+j.code));
       out.futEq=(j.data||[]).reduce((s,a)=>s+valueOf(a.currency, num(a.equity), px),0);
       out.futWallet=(j.data||[]).reduce((s,a)=>s+valueOf(a.currency, num(a.equity)-num(a.unrealized), px),0); });
@@ -393,7 +391,7 @@ function attachOrders(positions, orders){
   });
 }
 const accounts = () => (typeof S!=="undefined" && S && S.accounts) || {};
-const futuresOnly = () => !(typeof S!=="undefined" && S && S.settings.balScope==="all");
+const futuresOnly = () => true; // futures wallet only
 const acctTotal = a => futuresOnly() ? (a.futEq||0) : (a.total!=null ? a.total : (a.spot||0) + (a.futEq||0));
 const connectedEx = () => ACCT_EX.filter(k=>accounts()[k] && keyInfo(k));
 // Futures wallet balance across connected exchanges (excludes open-position P&L), used as starting capital
@@ -721,7 +719,7 @@ function viewTrades(c){
 }
 
 function viewMarkets(){
-  const st=S.settings; ui.mk = ui.mk || {ex:EX[st.exchange]?st.exchange:"mexc", market:st.market==="spot"?"spot":"futures", q:""};
+  const st=S.settings; ui.mk = ui.mk || {ex:"mexc", market:"futures", q:""}; ui.mk.ex="mexc"; ui.mk.market="futures";
   const p=st.p2p && st.p2p.fiat===st.secondCur ? st.p2p : null;
   const usdt = st.secondCur && st.currency==="USDT" ? `<section class="card">
     <div class="sechead"><div class="label">USDT price in ${esc(st.secondCur)}</div><button class="linkbtn" data-act="refreshUsdt">Refresh</button></div>
@@ -733,7 +731,8 @@ function viewMarkets(){
     <div class="note" id="mk-usdtmsg">${p?`Binance P2P median of the top offers · ${new Date(p.at).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"})}. The outlined one converts your amounts.`: Native?"Tap Refresh to load prices.":"Live prices work in the Android app."}</div>
   </section>` : "";
   return `${header()}${usdt}
-  <div class="two">
+  <div class="note" style="margin:0;font-weight:600;color:var(--ink-2)">MEXC Futures</div>
+  <div class="two" hidden>
     <div class="field"><select id="mk-ex" aria-label="Exchange">${EX_ORDER.map(k=>`<option value="${k}" ${ui.mk.ex===k?"selected":""}>${EX[k].name}</option>`).join("")}</select></div>
     <div class="seg" id="mk-mkt-seg"><button data-mkt="spot" aria-pressed="${ui.mk.market==="spot"}">Spot</button><button data-mkt="futures" aria-pressed="${ui.mk.market!=="spot"}">Futures</button></div>
   </div>
@@ -812,14 +811,14 @@ function viewSettings(){
     <div class="label">Exchange accounts</div>
     ${ACCT_EX.map(k=>{ const ki=keyInfo(k), a=accounts()[k]; return `<div class="acct"><div><div class="n">${EX[k].name}</div><div class="s">${ki?`Connected · key ${esc(ki)}${a?` · ${money(acctTotal(a))} ${esc(st.currency)}`:""}`:"Not connected"}</div></div>
       ${ki?`<button class="btn ghost sm" data-act="disconnect" data-ex="${k}">Disconnect</button>`:`<button class="btn sm" data-act="connect" data-ex="${k}">Connect</button>`}</div>`; }).join("")}
-    <div class="field"><label>Count as exchange balance</label><div class="seg" id="s-scope"><button data-scope="futures" aria-pressed="${st.balScope!=="all"}">Futures only</button><button data-scope="all" aria-pressed="${st.balScope==="all"}">All wallets</button></div></div>
-    <label class="toggle" for="s-useex"><span>Size trades from exchange balance<br><span class="hint" style="font-size:12.5px;color:var(--ink-3)">Compound mode uses your real USDT balance instead of the log's balance.</span></span><input type="checkbox" id="s-useex" ${st.useExBal?"checked":""}></label>
+    <div class="field" hidden><label>Count as exchange balance</label><div class="seg" id="s-scope"><button data-scope="futures" aria-pressed="${st.balScope!=="all"}">Futures only</button><button data-scope="all" aria-pressed="${st.balScope==="all"}">All wallets</button></div></div>
+    <label class="toggle" for="s-useex"><span>Size trades from exchange balance<br><span class="hint" style="font-size:12.5px;color:var(--ink-3)">Risk is worked out from your real MEXC futures balance instead of the log's balance.</span></span><input type="checkbox" id="s-useex" ${st.useExBal?"checked":""}></label>
     <span class="hint" style="font-size:12.5px;color:var(--ink-3)">${Native?"Read-only. Keys are encrypted on this phone and never included in backups.":"Exchange accounts work in the Android app."}</span>
   </section>
 
   <section class="card form">
-    <div class="label">Default exchange</div>
-    <div class="two">
+    <div class="label">Leverage</div>
+    <div class="two" hidden>
       <div class="field"><label for="s-ex">Exchange</label><select id="s-ex">${EX_ORDER.map(k=>`<option value="${k}" ${st.exchange===k?"selected":""}>${EX[k].name}</option>`).join("")}</select></div>
       <div class="field"><label>Market</label><div class="seg" id="s-mkt"><button data-mkt="spot" aria-pressed="${st.market==="spot"}">Spot</button><button data-mkt="futures" aria-pressed="${st.market!=="spot"}">Futures</button></div></div>
     </div>
@@ -827,7 +826,7 @@ function viewSettings(){
       <div class="field"><label for="s-lev">Default leverage (x)</label><input id="s-lev" class="num" inputmode="decimal" value="${st.leverage||10}"></div>
       <div class="field"><label for="s-mmr">Maintenance margin (%)</label><input id="s-mmr" class="num" inputmode="decimal" value="${st.mmr??0.5}"></div>
     </div>
-    <span class="hint" style="font-size:12.5px;color:var(--ink-3)">New trades start on this exchange. Prices come from each exchange's public market data, so no account or API key is needed. Leverage changes the margin and liquidation price, not your risk: the position size always comes from your risk and stop loss. Maintenance margin is used to estimate liquidation; 0.5% fits most large pairs.</span>
+    <span class="hint" style="font-size:12.5px;color:var(--ink-3)">All trades are MEXC Futures. Leverage changes the margin and liquidation price, not your risk: the position size always comes from your risk and stop loss. Maintenance margin is used to estimate liquidation; 0.5% fits most large pairs.</span>
   </section>
 
   <section class="card form">
@@ -887,10 +886,11 @@ function newTradeSheet(pre){
   pre = pre && pre.pair ? pre : {};
   const c=compute(S.settings,S.trades);
   const st0=S.settings;
-  ui.sheet={kind:"new", posKey:pre.posKey||null, dir:pre.dir||"Long", ex:pre.ex||(EX[st0.exchange]?st0.exchange:"mexc"), market:pre.market||(st0.market==="spot"?"spot":"futures")};
+  ui.sheet={kind:"new", posKey:pre.posKey||null, dir:pre.dir||"Long", ex:"mexc", market:"futures"};
   openSheet(`<header><h2>New trade</h2><button class="x" data-act="close" aria-label="Close">×</button></header>
   <form id="ntf" class="form" novalidate>
-    <div class="two">
+    <div class="note" style="margin:0;font-weight:600;color:var(--ink-2)">MEXC Futures</div>
+    <div class="two" hidden>
       <div class="field"><label for="n-ex">Exchange</label><select id="n-ex">${EX_ORDER.map(k=>`<option value="${k}" ${ui.sheet.ex===k?"selected":""}>${EX[k].name}</option>`).join("")}</select></div>
       <div class="field"><label>Market</label><div class="seg" id="n-mkt"><button type="button" data-mkt="spot" aria-pressed="${ui.sheet.market==="spot"}">Spot</button><button type="button" data-mkt="futures" aria-pressed="${ui.sheet.market!=="spot"}">Futures</button></div></div>
     </div>
@@ -1122,7 +1122,11 @@ async function doUpdateRate(){
   catch(e){ const m=$("s-ratemsg"); if(m) m.textContent = Native ? e.message : "Live rates work in the Android app. You can type the rate yourself."; const b=$("s-updrate"); if(b) b.disabled=false; }
 }
 
-S=load(); if(!loadRaw()) persist();
+S=load();
+Object.assign(S.settings, {exchange:"mexc", market:"futures", balScope:"futures"});
+if(S.accounts) Object.keys(S.accounts).forEach(k=>{ if(k!=="mexc") delete S.accounts[k]; });
+try{ if(Native && Native.keyInfo && Native.keyInfo("binance")) Native.removeKeys("binance"); }catch(e){}
+persist();
 applyTheme();
 render();
 // keep the second-currency rate fresh (every 6 hours) when the app opens
