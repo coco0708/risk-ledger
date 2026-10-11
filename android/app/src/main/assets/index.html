@@ -157,6 +157,12 @@ a.btn{display:block;text-align:center;text-decoration:none}
 .toggle input{width:44px;height:26px;accent-color:var(--accent)}
 .steps{margin:0;padding-left:20px;color:var(--ink-2);font-size:14px;display:flex;flex-direction:column;gap:6px}
 .warnbox{background:var(--warn-soft);color:var(--ink);border-radius:10px;padding:10px 12px;font-size:13.5px}
+@keyframes fu{from{background:var(--up-soft)}to{background:transparent}}
+@keyframes fd{from{background:var(--down-soft)}to{background:transparent}}
+.px.fu{animation:fu 1.2s ease-out;color:var(--up)} .px.fd{animation:fd 1.2s ease-out;color:var(--down)}
+.px{border-radius:4px;padding:0 3px}
+.livedot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--up);margin-right:6px;vertical-align:1px}
+@media (prefers-reduced-motion:no-preference){.livedot{animation:pulse 2s ease-in-out infinite}@keyframes pulse{50%{opacity:.35}}}
 .toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(92px + env(safe-area-inset-bottom,0px));background:var(--ink);color:var(--bg);padding:10px 16px;border-radius:10px;font-size:14px;font-weight:600;z-index:20}
 @media (max-width:360px){.grid{grid-template-columns:repeat(2,minmax(0,1fr))}.hero .bal{font-size:32px}}
 @media (prefers-reduced-motion:no-preference){.sheet:not([hidden]){animation:up .18s ease-out}@keyframes up{from{transform:translateY(16px);opacity:.6}to{transform:none;opacity:1}}}
@@ -239,7 +245,7 @@ const ALL = {
 const allCache = {}; // "ex|market" -> {rows:[{pair,b,q,p}], at}
 async function allPairs(ex, market, force){
   const k=ex+"|"+market, c=allCache[k];
-  if(c && !force && Date.now()-c.at<10000) return c.rows;
+  if(c && !force && Date.now()-c.at<2500) return c.rows;
   const [url, pick] = ALL[ex][market];
   const rows = pick(JSON.parse(await httpGet(url))).map(([sym,px])=>{ const x=splitPair(sym); const p=parseFloat(px); return x&&p>0 ? {pair:x.b+"/"+x.q, b:x.b, q:x.q, p} : null; }).filter(Boolean);
   if(!rows.length) throw new Error("No prices returned.");
@@ -372,7 +378,7 @@ async function livePrice(ex, market, pair){
 const live = {}; // "ex|market|pair" -> {p, at}
 const liveKey = t => `${t.ex}|${t.market}|${splitPair(t.pair)?.b}${splitPair(t.pair)?.q}`;
 async function refreshLive(trades){
-  const keys={}; trades.filter(t=>!t.outcome && t.ex && EX[t.ex]).forEach(t=>{ const k=liveKey(t); if(!live[k] || Date.now()-live[k].at>20000) keys[k]=t; });
+  const keys={}; trades.filter(t=>!t.outcome && t.ex && EX[t.ex]).forEach(t=>{ const k=liveKey(t); if(!live[k] || Date.now()-live[k].at>2500) keys[k]=t; });
   await Promise.all(Object.entries(keys).map(async([k,t])=>{ try{ live[k]={p:await livePrice(t.ex,t.market,t.pair), at:Date.now()}; }catch(e){} }));
   return Object.keys(keys).length>0;
 }
@@ -509,7 +515,7 @@ function render(){
   if(ui.tab==="markets") bindMarkets();
   if(ui.tab==="dash") drawSpark(c);
   if(ui.tab==="settings") bindSettings();
-  if(ui.tab==="trades" && Native) refreshLive(S.trades).then(changed=>{ if(changed && ui.tab==="trades" && $("sheet").hidden) render(); });
+  if(ui.tab==="trades" && Native) tick();
 }
 
 function header(){
@@ -630,14 +636,14 @@ function viewTrades(c){
     const res = t.outcome ? `<span class="r num ${cls(t._R)}">${R(t._R)}</span>` : `<span class="chip">Open</span>`;
     const lv = !t.outcome && live[liveKey(t)];
     const sub2 = t.outcome ? `<span class="sub rt num ${cls(t._pnl)}">${smoney(t._pnl)}</span>`
-      : lv ? `<span class="sub rt num ${cls(openR(t,lv.p))}">now ${R(openR(t,lv.p))}</span>` : `<span class="sub rt num">risk ${money(t.riskUsd)}</span>`;
+      : lv ? `<span class="sub rt num ${cls(openR(t,lv.p))}" data-lv="${esc(t.id)}">now ${R(openR(t,lv.p))}</span>` : `<span class="sub rt num" data-lv="${esc(t.id)}">risk ${money(t.riskUsd)}</span>`;
     return `<button class="trow" data-open="${esc(t.id)}"><span class="pair"><span class="dir ${t.dir==="Short"?"S":"L"}">${t.dir==="Short"?"SHORT":"LONG"}</span>${esc(pairLabel(t.pair))}${t.ex&&EX[t.ex]?`<span class="exn">${EX[t.ex].name}</span>`:""}</span>${res}
       <span class="sub num">${esc(t.date)} · ${t.outcome?esc(t.outcome):"@ "+price(t.entry)}</span>${sub2}</button>`;
   }).join("");
   const a=accounts(); const posList=ACCT_EX.filter(k=>a[k]&&keyInfo(k)).flatMap(k=>(a[k].positions||[]).map(p=>({...p, ex:k})));
   const posHtml = posList.length ? `<div class="label" style="margin-top:4px">Open on your exchanges</div><div class="list">${posList.map((p,i)=>`<button class="trow" data-pos="${i}">
       <span class="pair"><span class="dir ${p.dir==="Short"?"S":"L"}">${p.dir==="Short"?"SHORT":"LONG"}</span>${esc(p.pair)}<span class="exn">${EX[p.ex].name}</span></span>
-      <span class="r num ${p.upnl==null?"":cls(p.upnl)}">${p.upnl==null?"—":smoney(p.upnl)}</span>
+      <span class="r num ${p.upnl==null?"":cls(p.upnl)}" data-pu="${i}">${p.upnl==null?"—":smoney(p.upnl)}</span>
       <span class="sub num">@ ${price(p.entry)}${p.lev?` · ${p.lev}x`:""}</span><span class="sub rt">Tap to log</span></button>`).join("")}</div><div class="label" style="margin-top:4px">Your log</div>` : "";
   ui.posList = posList;
   return `${header()}${sampleBanner()}${posHtml}<div class="seg" role="group" aria-label="Filter trades">${seg}</div>
@@ -665,6 +671,7 @@ function viewMarkets(){
   <div id="mk-info" class="note" style="margin:0"></div>
   <div class="list" id="mk-list"><div class="empty">${Native?"Loading prices…":"Live prices work in the Android app."}</div></div>`;
 }
+const prevPx = {};
 function paintMarkets(rows){
   const box=$("mk-list"); if(!box) return;
   const q=(ui.mk.q||"").toUpperCase().replace(/[^A-Z0-9]/g,"");
@@ -672,9 +679,10 @@ function paintMarkets(rows){
   let list=rows.filter(r=>!q || (r.b+r.q).includes(q));
   list.sort((a,b)=>{ const pa=pop.indexOf(a.pair), pb=pop.indexOf(b.pair); if(pa!==pb) return (pa<0?999:pa)-(pb<0?999:pb);
     const qa=a.q==="USDT"?0:1, qb=b.q==="USDT"?0:1; if(qa!==qb) return qa-qb; if(q){ const sa=a.b.startsWith(q)?0:1, sb=b.b.startsWith(q)?0:1; if(sa!==sb) return sa-sb; } return a.pair.localeCompare(b.pair); });
-  $("mk-info").textContent = `${rows.length.toLocaleString()} pairs on ${EX[ui.mk.ex].name} ${mktLabel(ui.mk.market)}${q?` · ${list.length} match`:""} · tap one to start a trade`;
+  const at=(allCache[ui.mk.ex+"|"+ui.mk.market]||{}).at;
+  $("mk-info").innerHTML = `<span class="livedot"></span>Live · ${at?new Date(at).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit",second:"2-digit"}):""} · ${rows.length.toLocaleString()} pairs on ${EX[ui.mk.ex].name} ${mktLabel(ui.mk.market)}${q?` · ${list.length} match`:""}`;
   const shown=list.slice(0,80);
-  box.innerHTML = shown.length ? shown.map(r=>`<button class="mrow" data-mpair="${esc(r.pair)}" data-mpx="${r.p}"><span class="pair">${esc(r.pair)}</span><span class="px num">${price(r.p)}</span>${hasSec()&&r.q===S.settings.currency?`<span></span><span class="sub rt num" style="font-size:12px;color:var(--ink-3);text-align:right">${fmtSec(r.p)}</span>`:""}</button>`).join("")
+  box.innerHTML = shown.length ? shown.map(r=>`<button class="mrow" data-mpair="${esc(r.pair)}" data-mpx="${r.p}"><span class="pair">${esc(r.pair)}</span><span class="px num ${(()=>{ const k=ui.mk.ex+ui.mk.market+r.pair, o=prevPx[k]; prevPx[k]=r.p; return o==null||o===r.p? "" : r.p>o? "fu" : "fd"; })()}">${price(r.p)}</span>${hasSec()&&r.q===S.settings.currency?`<span></span><span class="sub rt num" style="font-size:12px;color:var(--ink-3);text-align:right">${fmtSec(r.p)}</span>`:""}</button>`).join("")
     + (list.length>80?`<div class="note" style="padding:12px 16px;margin:0">Showing 80 of ${list.length}. Search to narrow it down.</div>`:"")
     : `<div class="empty">No pairs match "${esc(ui.mk.q)}".</div>`;
 }
@@ -912,9 +920,7 @@ function tradeSheet(id){
     if(!o){ box.innerHTML=`<span class="note" style="margin:0">Pick where the trade ended.</span>`; return; }
     const r=rFor(o,$("c-man").value,st), fee=parseFloat($("c-fee").value)||0, pnl=r*t.riskUsd-fee;
     box.innerHTML=`<div class="kv"><span class="k">Result</span><span class="v num ${cls(r)}">${R(r)}</span></div><div class="kv"><span class="k">P&amp;L after fees</span><span class="v num ${cls(pnl)}">${smoney(pnl)}${hasSec()?`<br><span style="font-size:12.5px;color:var(--ink-3)">${secTxt(pnl)}</span>`:""}</span></div>`; };
-  if(!t.outcome && t.ex && EX[t.ex] && Native){ livePrice(t.ex,t.market,t.pair).then(p=>{ live[liveKey(t)]={p,at:Date.now()}; const el=$("t-live"); if(!el) return; const r=openR(t,p);
-      el.querySelector(".v").innerHTML=`${price(p)} · <span class="${cls(r)}">${R(r)} (${smoney(r*t.riskUsd)})</span>`; })
-    .catch(err=>{ const el=$("t-live"); if(el) el.querySelector(".v").textContent="Price unavailable"; }); }
+  if(!t.outcome && t.ex && EX[t.ex] && Native){ refreshLive([t]).then(()=>{ if(!live[liveKey(t)]){ const el=$("t-live"); if(el) el.querySelector(".v").textContent="Price unavailable"; } else paintLive(); }); }
   $("c-outs").addEventListener("click",e=>{ const b=e.target.closest("button"); if(!b) return; ui.sheet.outcome=b.dataset.out;
     $("c-outs").querySelectorAll("button").forEach(x=>x.setAttribute("aria-pressed",String(x===b))); $("f-man").hidden=b.dataset.out!=="Manual"; upd(); });
   $("c-man").addEventListener("input",upd); $("c-fee").addEventListener("input",upd);
@@ -1028,6 +1034,32 @@ render();
 if(S.settings.secondCur && Native && (!S.settings.rateAt || Date.now()-S.settings.rateAt > 30*60e3)) updateRate().then(()=>render()).catch(()=>{});
 if(Native && ACCT_EX.some(k=>keyInfo(k))) syncAccounts().then(()=>{ if($("sheet").hidden) render(); }).catch(()=>{});
 // keep Markets prices moving while that tab is open
-setInterval(()=>{ if(ui.tab==="markets" && $("sheet").hidden && Native && !document.hidden) loadMarkets(false); }, 10000);
+// Live prices: every 3 s while the app is on screen. Only the numbers change, so scrolling and typing aren't disturbed.
+async function refreshPositions(){
+  const a=accounts(); const jobs={};
+  connectedEx().forEach(k=>(a[k].positions||[]).forEach(p=>{ jobs[k+"|"+p.pair]=[k,p.pair]; }));
+  const px={}; await Promise.all(Object.entries(jobs).map(async([key,[k,pair]])=>{ try{ px[key]=await livePrice(k,"futures",pair); }catch(e){} }));
+  connectedEx().forEach(k=>(a[k].positions||[]).forEach(p=>{ const m=px[k+"|"+p.pair]; if(m>0 && p.size){ p.mark=m; p.upnl=(m-p.entry)*p.size*(p.dir==="Short"?-1:1); } }));
+}
+function paintLive(){
+  document.querySelectorAll("[data-lv]").forEach(el=>{ const t=S.trades.find(x=>x.id===el.dataset.lv); const lv=t&&live[liveKey(t)]; if(!lv) return;
+    const r=openR(t,lv.p); el.className="sub rt num "+cls(r); el.textContent="now "+R(r); });
+  if(document.querySelector("[data-pu]")){ const a=accounts(); const list=connectedEx().flatMap(k=>(a[k].positions||[]));
+    document.querySelectorAll("[data-pu]").forEach(el=>{ const p=list[+el.dataset.pu]; if(!p||p.upnl==null) return; el.className="r num "+cls(p.upnl); el.textContent=smoney(p.upnl); }); }
+  const tl=$("t-live"); if(tl && ui.sheet && ui.sheet.kind==="trade"){ const t=S.trades.find(x=>x.id===ui.sheet.id); const lv=t&&live[liveKey(t)];
+    if(lv){ const r=openR(t,lv.p); tl.querySelector(".v").innerHTML=`${price(lv.p)} · <span class="${cls(r)}">${R(r)} (${smoney(r*t.riskUsd)})</span><br><span style="font-size:11.5px;color:var(--ink-3);font-family:var(--f-ui)"><span class="livedot"></span>${new Date(lv.at).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit",second:"2-digit"})}</span>`; } }
+}
+let ticking=false;
+async function tick(){
+  if(ticking || !Native || document.hidden) return; ticking=true;
+  try{
+    const sheetOpen=!$("sheet").hidden;
+    if(!sheetOpen && ui.tab==="markets") await loadMarkets(false);
+    else if(!sheetOpen && ui.tab==="trades"){ await Promise.all([refreshLive(S.trades), refreshPositions()]); paintLive(); }
+    else if(sheetOpen && ui.sheet && ui.sheet.kind==="trade"){ await refreshLive(S.trades.filter(t=>t.id===ui.sheet.id)); paintLive(); }
+  }catch(e){} finally{ ticking=false; }
+}
+setInterval(tick, 3000);
+document.addEventListener("visibilitychange", ()=>{ if(!document.hidden) tick(); });
 </script>
 </html>
