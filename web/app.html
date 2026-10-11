@@ -183,7 +183,7 @@ function saveRaw(s){ try{ if(Native) Native.save(s); else localStorage.setItem(K
 
 const DEF = { capital:1000, currency:"USDT", riskPct:3, mode:"compound", brakeDD:15, brakeMult:50,
   tps:[{r:1,pct:25},{r:2,pct:25},{r:3,pct:25},{r:4,pct:25}],
-  theme:"system", secondCur:"PHP", secondRate:null, rateAt:null, rateSrc:"p2pBuy", p2p:null, exchange:"mexc", market:"futures", useExBal:false, balScope:"futures", capitalFrom:null };
+  theme:"system", secondCur:"PHP", secondRate:null, rateAt:null, rateSrc:"p2pBuy", p2p:null, exchange:"mexc", market:"futures", useExBal:false, balScope:"futures", capitalFrom:null, leverage:10, mmr:0.5 };
 let S; // {settings, trades, sample}
 let ui = { tab:"dash", filter:"all", sheet:null };
 
@@ -391,6 +391,16 @@ async function refreshLive(trades){
   const keys={}; trades.filter(t=>!t.outcome && t.ex && EX[t.ex]).forEach(t=>{ const k=liveKey(t); if(!live[k] || Date.now()-live[k].at>2500) keys[k]=t; });
   await Promise.all(Object.entries(keys).map(async([k,t])=>{ try{ live[k]={p:await livePrice(t.ex,t.market,t.pair), at:Date.now()}; }catch(e){} }));
   return Object.keys(keys).length>0;
+}
+// Leverage: margin = position value ÷ leverage. Liquidation is an estimate for isolated margin with a
+// maintenance margin rate (mmr); exchanges use tiered rates, so treat it as approximate.
+function levInfo(entry, sl, dir, value, lev, mmr){
+  lev=Math.max(1,Number(lev)||1); const m=(Number(mmr)||0)/100;
+  const liq = dir==="Short" ? entry*(1+1/lev-m) : entry*(1-1/lev+m);
+  const stopPct = Math.abs(entry-sl)/entry;
+  const maxLev = Math.max(1, Math.floor(1/(stopPct+m) * 0.9)); // 10% buffer so the stop fills before liquidation
+  const liqFirst = dir==="Short" ? liq <= sl : liq >= sl;
+  return { lev, margin:value/lev, liq: lev>1? liq : null, maxLev, liqFirst: lev>1 && liqFirst, tooHigh: lev>maxLev };
 }
 const openR = (t, p) => (p - t.entry) / (t.entry - t.sl); // works for long and short
 
@@ -648,7 +658,7 @@ function viewTrades(c){
     const sub2 = t.outcome ? `<span class="sub rt num ${cls(t._pnl)}">${smoney(t._pnl)}</span>`
       : lv ? `<span class="sub rt num ${cls(openR(t,lv.p))}" data-lv="${esc(t.id)}">now ${R(openR(t,lv.p))}</span>` : `<span class="sub rt num" data-lv="${esc(t.id)}">risk ${money(t.riskUsd)}</span>`;
     return `<button class="trow" data-open="${esc(t.id)}"><span class="pair"><span class="dir ${t.dir==="Short"?"S":"L"}">${t.dir==="Short"?"SHORT":"LONG"}</span>${esc(pairLabel(t.pair))}${t.ex&&EX[t.ex]?`<span class="exn">${EX[t.ex].name}</span>`:""}</span>${res}
-      <span class="sub num">${esc(t.date)} · ${t.outcome?esc(t.outcome):"@ "+price(t.entry)}</span>${sub2}</button>`;
+      <span class="sub num">${esc(t.date)} · ${t.outcome?esc(t.outcome):"@ "+price(t.entry)}${t.lev>1?` · ${t.lev}x`:""}</span>${sub2}</button>`;
   }).join("");
   const a=accounts(); const posList=ACCT_EX.filter(k=>a[k]&&keyInfo(k)).flatMap(k=>(a[k].positions||[]).map(p=>({...p, ex:k})));
   const posHtml = posList.length ? `<div class="label" style="margin-top:4px">Open on your exchanges</div><div class="list">${posList.map((p,i)=>`<button class="trow" data-pos="${i}">
@@ -766,7 +776,11 @@ function viewSettings(){
       <div class="field"><label for="s-ex">Exchange</label><select id="s-ex">${EX_ORDER.map(k=>`<option value="${k}" ${st.exchange===k?"selected":""}>${EX[k].name}</option>`).join("")}</select></div>
       <div class="field"><label>Market</label><div class="seg" id="s-mkt"><button data-mkt="spot" aria-pressed="${st.market==="spot"}">Spot</button><button data-mkt="futures" aria-pressed="${st.market!=="spot"}">Futures</button></div></div>
     </div>
-    <span class="hint" style="font-size:12.5px;color:var(--ink-3)">New trades start on this exchange. Prices come from each exchange's public market data, so no account or API key is needed.</span>
+    <div class="two">
+      <div class="field"><label for="s-lev">Default leverage (x)</label><input id="s-lev" class="num" inputmode="decimal" value="${st.leverage||10}"></div>
+      <div class="field"><label for="s-mmr">Maintenance margin (%)</label><input id="s-mmr" class="num" inputmode="decimal" value="${st.mmr??0.5}"></div>
+    </div>
+    <span class="hint" style="font-size:12.5px;color:var(--ink-3)">New trades start on this exchange. Prices come from each exchange's public market data, so no account or API key is needed. Leverage changes the margin and liquidation price, not your risk: the position size always comes from your risk and stop loss. Maintenance margin is used to estimate liquidation; 0.5% fits most large pairs.</span>
   </section>
 
   <section class="card form">
@@ -804,6 +818,8 @@ function bindSettings(){
   $("s-sec").addEventListener("change",e=>{ st.secondCur=(e.target.value||"").trim().toUpperCase().replace(/[^A-Z]/g,"").slice(0,5); st.secondRate=null; st.rateAt=null; persist(); render(); if(st.secondCur) doUpdateRate(); });
   $("s-rate").addEventListener("change",e=>{ const v=parseFloat(e.target.value); st.secondRate = v>0 ? v : null; st.rateAt=null; persist(); render(); });
   $("s-ex").addEventListener("change",e=>{ st.exchange=e.target.value; persist(); });
+  $("s-lev").addEventListener("change",e=>{ const v=parseFloat(e.target.value); if(v>=1){ st.leverage=Math.min(v,200); persist(); } });
+  $("s-mmr").addEventListener("change",e=>{ const v=parseFloat(e.target.value); if(v>=0 && v<50){ st.mmr=v; persist(); } });
   $("s-useex").addEventListener("change",e=>{ st.useExBal=e.target.checked; persist(); });
   $("s-scope").addEventListener("click",e=>{ const b=e.target.closest("button"); if(!b) return; st.balScope=b.dataset.scope; persist(); render(); });
   if($("s-src")) $("s-src").addEventListener("click",e=>{ const b=e.target.closest("button"); if(!b) return; st.rateSrc=b.dataset.src; persist(); render(); doUpdateRate(); });
@@ -841,17 +857,20 @@ function newTradeSheet(pre){
       <div class="field" id="f-sl"><label for="n-sl">Stop loss</label><input id="n-sl" class="num" inputmode="decimal" placeholder="0.00"></div>
     </div>
     <div id="n-livemsg" class="hint" style="font-size:12.5px;color:var(--ink-3);margin-top:-4px" hidden></div>
-    <div class="field"><label for="n-risk">Risk (${esc(S.settings.currency)})</label><input id="n-risk" class="num" inputmode="decimal" value="${c.nextUsd.toFixed(2)}">
-      <span class="hint">${c.nextPct.toFixed(2).replace(/\.?0+$/,"")}% of ${S.settings.mode==="flat"?"starting capital":"balance"}${c.brake?" · drawdown brake on":""}${hasSec()?" · "+secTxt(+c.nextUsd.toFixed(2)):""}. You can change it.</span></div>
+    <div class="two">
+      <div class="field"><label for="n-risk">Risk (${esc(S.settings.currency)})</label><input id="n-risk" class="num" inputmode="decimal" value="${c.nextUsd.toFixed(2)}"></div>
+      <div class="field" id="f-lev" ${ui.sheet.market==="spot"?"hidden":""}><label for="n-lev">Leverage (x)</label><input id="n-lev" class="num" inputmode="decimal" value="${pre.lev||S.settings.leverage||10}"></div>
+    </div>
+    <div class="field" style="margin-top:-6px"><span class="hint">${c.nextPct.toFixed(2).replace(/\.?0+$/,"")}% of ${S.settings.mode==="flat"?"starting capital":"balance"}${c.brake?" · drawdown brake on":""}${hasSec()?" · "+secTxt(+c.nextUsd.toFixed(2)):""}. You can change it.</span></div>
     <div class="card preview" id="n-prev"></div>
     <div class="field"><label for="n-note">Note (optional)</label><input id="n-note" placeholder="Setup, timeframe, reason"></div>
     <div id="n-err" class="err" hidden></div>
     <button class="btn" type="submit">Save open trade</button>
   </form>`);
   const upd=()=>updatePreview(c);
-  ["n-entry","n-sl","n-risk"].forEach(id=>$(id).addEventListener("input",upd));
+  ["n-entry","n-sl","n-risk","n-lev"].forEach(id=>$(id).addEventListener("input",upd));
   $("n-ex").addEventListener("change",e=>{ ui.sheet.ex=e.target.value; });
-  $("n-mkt").addEventListener("click",e=>{ const b=e.target.closest("button"); if(!b) return; ui.sheet.market=b.dataset.mkt; $("n-mkt").querySelectorAll("button").forEach(x=>x.setAttribute("aria-pressed",String(x===b))); });
+  $("n-mkt").addEventListener("click",e=>{ const b=e.target.closest("button"); if(!b) return; ui.sheet.market=b.dataset.mkt; $("n-mkt").querySelectorAll("button").forEach(x=>x.setAttribute("aria-pressed",String(x===b))); $("f-lev").hidden=ui.sheet.market==="spot"; upd(); });
   $("n-live").addEventListener("click",async()=>{ const msg=$("n-livemsg"), btn=$("n-live"); msg.hidden=false;
     if(!splitPair($("n-pair").value)){ msg.textContent="Enter the pair first, for example BTC/USDT."; return; }
     btn.disabled=true; msg.textContent="Getting price…";
@@ -864,13 +883,14 @@ function newTradeSheet(pre){
 }
 function readNew(){
   const entry=parseFloat($("n-entry").value), sl=parseFloat($("n-sl").value), risk=parseFloat($("n-risk").value), dir=ui.sheet.dir;
+  const lev = ui.sheet.market==="spot" ? 1 : Math.max(1, parseFloat($("n-lev").value)||1);
   let err="";
   if(!(entry>0)) err="Enter the entry price.";
   else if(!(sl>0)) err="Enter the stop-loss price.";
   else if(dir==="Long" && sl>=entry) err="For a long, the stop loss must be below entry.";
   else if(dir==="Short" && sl<=entry) err="For a short, the stop loss must be above entry.";
   else if(!(risk>0)) err="Enter how much you are risking.";
-  return {entry,sl,risk,dir,err};
+  return {entry,sl,risk,dir,lev,err};
 }
 function updatePreview(c){
   const v=readNew(); const box=$("n-prev");
@@ -878,12 +898,20 @@ function updatePreview(c){
   $("f-sl").classList.toggle("bad", v.err.includes("stop")&&$("n-sl").value!=="");
   if(v.err){ box.innerHTML=`<div class="label">Position</div><div class="note" style="margin-top:8px">Enter entry and stop loss to size the position.</div>`; return; }
   const dist=Math.abs(v.entry-v.sl), size=v.risk/dist, value=size*v.entry, lev=c.bal>0? value/c.bal : 0;
+  const L=levInfo(v.entry,v.sl,v.dir,value,v.lev,S.settings.mmr), fut=ui.sheet.market!=="spot";
+  const bal=(c.exBal>0?c.exBal:c.bal);
   box.innerHTML=`<div class="label">Position</div>
     <div class="kv" style="margin-top:6px"><span class="k">Size</span><span class="v">${units(size)} units</span></div>
     <div class="kv"><span class="k">Position value</span><span class="v">${money(value)}</span></div>
     ${hasSec()?`<div class="kv"><span class="k">Risk in ${esc(S.settings.secondCur)}</span><span class="v">${fmtSec(v.risk)}</span></div>`:""}
     <div class="kv"><span class="k">Stop distance</span><span class="v">${(dist/v.entry*100).toFixed(2)}%</span></div>
-    <div class="kv"><span class="k">Value ÷ balance</span><span class="v">${lev.toFixed(1)}x</span></div>
+    ${fut?`<div class="kv"><span class="k">Margin at ${L.lev}x</span><span class="v">${money(L.margin)}<br><span style="font-size:12px;color:var(--ink-3)">${bal>0?(L.margin/bal*100).toFixed(1)+"% of balance":""}</span></span></div>
+    <div class="kv"><span class="k">Liquidation ≈</span><span class="v ${L.liqFirst?"down":""}">${L.liq?price(L.liq):"—"}</span></div>
+    <div class="kv"><span class="k">Highest safe leverage</span><span class="v">${L.maxLev}x</span></div>`
+    :`<div class="kv"><span class="k">Value ÷ balance</span><span class="v">${lev.toFixed(1)}x</span></div>`}
+    ${fut&&L.liqFirst?`<div class="warnbox" style="margin-top:8px"><b>Liquidation comes before your stop loss.</b> At ${L.lev}x you'd be liquidated around ${price(L.liq)}, before the stop at ${price(v.sl)}. Use ${L.maxLev}x or less.</div>`
+      : fut&&L.tooHigh?`<div class="warnbox" style="margin-top:8px">${L.lev}x leaves almost no room between the stop and liquidation. ${L.maxLev}x or less is safer.</div>`:""}
+    ${fut&&bal>0&&L.margin>bal?`<div class="warnbox" style="margin-top:8px">This needs ${money(L.margin)} margin, more than your balance. Raise the leverage or lower the risk.</div>`:""}
     <div class="tplist">${S.settings.tps.map((t,i)=>`<div><span class="label">TP${i+1} · ${t.r}R</span><span class="num">${price(tpPrice(v.entry,v.sl,v.dir,t.r))}</span></div>`).join("")}</div>`;
 }
 function saveNew(){
@@ -891,8 +919,8 @@ function saveNew(){
   if(v.err){ e.hidden=false; e.textContent=v.err; return; }
   const bal=compute(S.settings,S.trades);
   const sp=splitPair($("n-pair").value); const pair=sp? sp.b+sp.q : "—";
-  S.settings.exchange=ui.sheet.ex; S.settings.market=ui.sheet.market;
-  S.trades.push({id:uid(), created:Date.now(), date:$("n-date").value||todayStr(), pair, ex:ui.sheet.ex, market:ui.sheet.market, dir:v.dir, entry:v.entry, sl:v.sl,
+  S.settings.exchange=ui.sheet.ex; S.settings.market=ui.sheet.market; if(ui.sheet.market!=="spot") S.settings.leverage=v.lev;
+  S.trades.push({id:uid(), created:Date.now(), date:$("n-date").value||todayStr(), pair, ex:ui.sheet.ex, market:ui.sheet.market, lev:v.lev, dir:v.dir, entry:v.entry, sl:v.sl,
     riskPct: bal.bal>0? +(v.risk/(S.settings.mode==="flat"?bal.cap:bal.bal)*100).toFixed(3) : 0, riskUsd:+v.risk.toFixed(2),
     outcome:null, manualR:null, fees:0, note:($("n-note").value||"").trim(), closedAt:null});
   persist(); ui.tab="trades"; ui.filter="all"; closeSheet(); toast("Trade saved");
@@ -910,6 +938,8 @@ function tradeSheet(id){
     <div class="kv"><span class="k">Entry · Stop</span><span class="v">${price(t.entry)} · ${price(t.sl)}</span></div>
     <div class="kv"><span class="k">Risk</span><span class="v">${money(t.riskUsd)} ${esc(st.currency)}${hasSec()?`<br><span style="font-size:12.5px;color:var(--ink-3)">${secTxt(t.riskUsd)}</span>`:""}</span></div>
     <div class="kv"><span class="k">Size</span><span class="v">${units(size)} units</span></div>
+    ${t.lev>1?(()=>{ const L=levInfo(t.entry,t.sl,t.dir,size*t.entry,t.lev,st.mmr); return `<div class="kv"><span class="k">Leverage · margin</span><span class="v">${L.lev}x · ${money(L.margin)}</span></div>
+    <div class="kv"><span class="k">Liquidation ≈</span><span class="v ${L.liqFirst?"down":""}">${price(L.liq)}${L.liqFirst?"<br><span style='font-size:12px'>before your stop</span>":""}</span></div>`; })():""}
     <div class="tplist">${st.tps.map((x,i)=>`<div><span class="label">TP${i+1}</span><span class="num">${price(tpPrice(t.entry,t.sl,t.dir,x.r))}</span></div>`).join("")}</div>
     ${t.note?`<div class="note">${esc(t.note)}</div>`:""}
     ${!t.outcome && t.ex && EX[t.ex] ? `<div class="kv live" id="t-live"><span class="k">Now</span><span class="v">${Native?"Loading…":"Live prices work in the Android app"}</span></div>`:""}
@@ -978,9 +1008,9 @@ function shareOrShow(title, text, filename){
 }
 function csv(){
   const c=compute(S.settings,S.trades);
-  const head=["date","exchange","market","pair","direction","entry","stop_loss","risk","outcome","r_result","fees","pnl","note"];
+  const head=["date","exchange","market","pair","direction","leverage","entry","stop_loss","risk","outcome","r_result","fees","pnl","note"];
   const q=v=>{ const s=String(v==null?"":v); return /[",\n]/.test(s)? '"'+s.replace(/"/g,'""')+'"' : s; };
-  const rows=S.trades.slice().sort((a,b)=>a.created-b.created).map(t=>[t.date,t.ex&&EX[t.ex]?EX[t.ex].name:"",t.ex?mktLabel(t.market):"",pairLabel(t.pair),t.dir,t.entry,t.sl,t.riskUsd,t.outcome||"Open",t.outcome?t._R.toFixed(3):"",t.fees||0,t.outcome?t._pnl.toFixed(2):"",t.note].map(q).join(","));
+  const rows=S.trades.slice().sort((a,b)=>a.created-b.created).map(t=>[t.date,t.ex&&EX[t.ex]?EX[t.ex].name:"",t.ex?mktLabel(t.market):"",pairLabel(t.pair),t.dir,t.lev||"",t.entry,t.sl,t.riskUsd,t.outcome||"Open",t.outcome?t._R.toFixed(3):"",t.fees||0,t.outcome?t._pnl.toFixed(2):"",t.note].map(q).join(","));
   return head.join(",")+"\n"+rows.join("\n");
 }
 function restoreSheet(){
@@ -1000,7 +1030,7 @@ document.addEventListener("click",e=>{
   const m=e.target.closest("[data-mode]"); if(m){ S.settings.mode=m.dataset.mode; persist(); render(); return; }
   const o=e.target.closest("[data-open]"); if(o){ tradeSheet(o.dataset.open); return; }
   const mp=e.target.closest("[data-mpair]"); if(mp){ newTradeSheet({ex:ui.mk.ex, market:ui.mk.market, pair:mp.dataset.mpair, entry:+mp.dataset.mpx}); return; }
-  const ps=e.target.closest("[data-pos]"); if(ps){ const p=ui.posList[+ps.dataset.pos]; if(p) newTradeSheet({ex:p.ex, market:"futures", pair:p.pair, entry:p.entry, dir:p.dir}); return; }
+  const ps=e.target.closest("[data-pos]"); if(ps){ const p=ui.posList[+ps.dataset.pos]; if(p) newTradeSheet({ex:p.ex, market:"futures", pair:p.pair, entry:p.entry, dir:p.dir, lev:p.lev}); return; }
   const a=e.target.closest("[data-act]"); if(!a) return;
   const act=a.dataset.act;
   if(act==="close") closeSheet();
