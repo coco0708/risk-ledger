@@ -189,8 +189,7 @@ function saveRaw(s){ try{ if(Native) Native.save(s); else localStorage.setItem(K
 
 const DEF = { capital:1000, currency:"USDT", riskPct:3, mode:"compound", brakeDD:15, brakeMult:50,
   tps:[{r:1,pct:25},{r:2,pct:25},{r:3,pct:25},{r:4,pct:25}],
-  theme:"system", secondCur:"PHP", secondRate:null, rateAt:null, rateSrc:"p2pBuy", p2p:null, exchange:"mexc", market:"futures", useExBal:false, balScope:"futures", capitalFrom:null, leverage:10, mmr:0.5,
-  tpMode:"R", ap:{ bg:false, testnet:false, manageManual:false, slPct:2, beAfterTP1:true, beOffsetPct:0.1 } };
+  theme:"system", secondCur:"PHP", secondRate:null, rateAt:null, rateSrc:"p2pBuy", p2p:null, exchange:"mexc", market:"futures", useExBal:false, balScope:"futures", capitalFrom:null, leverage:10, mmr:0.5 };
 let S; // {settings, trades, sample}
 let ui = { tab:"dash", filter:"all", sheet:null };
 
@@ -198,42 +197,7 @@ const clone = o => JSON.parse(JSON.stringify(o));
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2,6);
 const todayStr = () => { const d=new Date(); d.setMinutes(d.getMinutes()-d.getTimezoneOffset()); return d.toISOString().slice(0,10); };
 function esc(s){ return String(s==null?"":s).replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
-function persist(){ saveRaw(JSON.stringify(S,(k,v)=>(k==="_R"||k==="_pnl")?undefined:v)); syncPlan(); }
-
-/* ---------- autopilot (Binance futures) ---------- */
-const tradeSlot = () => S.settings.ap.testnet ? "binancetest" : "binance";
-const slotName = k => k==="binancetest" ? "Binance Testnet" : (EX[k]||{name:k}).name;
-function apPlan(){ const st=S.settings, a=st.ap;
-  return { enabled:!!a.bg, testnet:!!a.testnet, manageManual:!!a.manageManual, slPct:Number(a.slPct)||2,
-    targets: st.tpMode==="pct"?"pct":"R", tps: st.tps.map((t,i)=>({ at: st.tpMode==="pct"? Number(t.mv??(i+1)) : Number(t.r), close:Number(t.pct)||0 })),
-    beAfterTP1: a.beAfterTP1!==false, beOffsetPct: Number(a.beOffsetPct)||0 }; }
-function syncPlan(){ if(typeof S!=="undefined" && S && Native && Native.apSetPlan){ try{ Native.apSetPlan(JSON.stringify(apPlan())); }catch(e){} } }
-function apStatus(){ try{ return Native && Native.apStatus ? JSON.parse(Native.apStatus()||"{}") : {}; }catch(e){ return {}; } }
-function fut(action, payload){ return new Promise((res,rej)=>{
-  if(!(Native && Native.futAction)) return rej(new Error("Trading works in the Android app."));
-  const id="r"+(++reqN); pending[id]={ res:b=>{ try{ res(JSON.parse(b)); }catch(e){ res({ok:false, error:String(b)}); } }, rej };
-  Native.futAction(id, action, !!S.settings.ap.testnet, JSON.stringify(payload||{}));
-  setTimeout(()=>{ if(pending[id]){ delete pending[id]; rej(new Error("Binance didn't answer within 30 seconds. Check the Trades tab before trying again.")); } }, 30000);
-}); }
-function apRunNow(){ return new Promise(res=>{ if(!(Native&&Native.apRunNow)) return res(""); const id="r"+(++reqN); pending[id]={res, rej:()=>res("")}; Native.apRunNow(id); setTimeout(()=>{ if(pending[id]){ delete pending[id]; res(""); } }, 30000); }); }
-// Apply what the autopilot did (TP hits, closes) to the logged trades.
-function pullEvents(){
-  if(!(Native && Native.apEvents)) return;
-  let evs=[]; try{ evs=JSON.parse(Native.apEvents()||"[]"); }catch(e){}
-  if(!evs.length) return;
-  let changed=false;
-  evs.forEach(ev=>{
-    if(ev.type==="closed"){
-      const t=S.trades.find(x=>!x.outcome && x.posKey===ev.key);
-      if(t && ev.outcome && ev.outcome!=="manual"){ t.outcome=ev.outcome; t.closedAt=ev.at||Date.now(); t.status="closed"; changed=true; }
-      else if(t && t.closingByApp){ t.closingByApp=false; changed=true; }
-      else if(t && ev.outcome==="manual"){ t.note=((t.note?t.note+" · ":"")+"Closed by hand on Binance").trim(); changed=true; }
-    }
-    if(ev.type==="attached"){ const t=S.trades.find(x=>!x.outcome && x.posKey===ev.key && x.status==="pending"); if(t){ t.status="open"; changed=true; } }
-  });
-  if(changed){ persist(); if($("sheet").hidden) render(); }
-  toast(evs[evs.length-1].title);
-}
+function persist(){ saveRaw(JSON.stringify(S,(k,v)=>(k==="_R"||k==="_pnl")?undefined:v)); }
 
 /* ---------- exchanges: live prices (public market data, no account needed) and trade links ---------- */
 const lc = s => s.toLowerCase();
@@ -512,24 +476,14 @@ if(mq && mq.addEventListener) mq.addEventListener("change", ()=>{ applyTheme(); 
 
 /* ---------- math (same rules as the Excel tracker) ---------- */
 const OUTS = ["SL","BE","TP1","TP2","TP3","TP4"];
-function rFor(outcome, manualR, st, t){
+function rFor(outcome, manualR, st){
   st = st || S.settings;
   if(outcome==="Manual") return Number(manualR)||0;
   if(outcome==="SL") return -1;
   if(outcome==="BE") return 0;
   const n = {TP1:1,TP2:2,TP3:3,TP4:4}[outcome]; if(!n) return 0;
-  if(t && Array.isArray(t.tpR)){ // this trade's own plan
-    if(outcome==="TP4") return t.tpR.reduce((s,r,i)=>s+r*(t.tpClose[i]||0)/100,0);
-    let r=0; for(let i=0;i<n && i<t.tpR.length;i++) r += t.tpR[i]*(t.tpClose[i]||0)/100; return r; }
   let r=0; for(let i=0;i<n;i++) r += st.tps[i].r * st.tps[i].pct/100; return r;
 }
-// Take-profit prices for a trade: R multiples of the stop distance, or % moves from entry.
-function planTPs(entry, sl, dir, st){
-  st=st||S.settings; const d=Math.abs(entry-sl), s=dir==="Short"?-1:1;
-  return st.tps.map((t,i)=>{ const move = st.tpMode==="pct" ? entry*Number(t.mv??(i+1))/100 : d*Number(t.r);
-    return { price: entry+s*move, r: d? move/d : 0, close: Number(t.pct)||0 }; });
-}
-const tpLabel = (t,i,st) => (st||S.settings).tpMode==="pct" ? `${t.mv??(i+1)}%` : `${t.r}R`;
 function tpPrice(entry, sl, dir, r){ const d=Math.abs(entry-sl); return entry + (dir==="Short"?-1:1)*r*d; }
 function closedSorted(trades){ return trades.filter(t=>t.outcome).sort((a,b)=>(a.closedAt-b.closedAt)||(a.created-b.created)); }
 
@@ -539,7 +493,7 @@ function compute(st, trades){
   let bal=cap, peak=cap, maxDD=0, streak=0, maxStreak=0, wins=0, losses=0, be=0, sumR=0, gW=0, gL=0, sumWinR=0, sumLossR=0;
   const curve=[{bal:cap,label:"Start"}];
   for(const t of closed){
-    const R = rFor(t.outcome, t.manualR, st, t);
+    const R = rFor(t.outcome, t.manualR, st);
     const pnl = R*t.riskUsd - (Number(t.fees)||0);
     t._R=R; t._pnl=pnl;
     bal+=pnl; peak=Math.max(peak,bal); if(peak>0) maxDD=Math.max(maxDD,1-bal/peak);
@@ -603,7 +557,7 @@ function makeSample(){
 
 function load(){
   const raw = loadRaw();
-  if(raw){ try{ const o=JSON.parse(raw); if(o && o.settings && Array.isArray(o.trades)){ o.settings = Object.assign(clone(DEF), o.settings); o.settings.ap = Object.assign(clone(DEF.ap), o.settings.ap||{}); return o; } }catch(e){} }
+  if(raw){ try{ const o=JSON.parse(raw); if(o && o.settings && Array.isArray(o.trades)){ o.settings = Object.assign(clone(DEF), o.settings); return o; } }catch(e){} }
   return makeSample();
 }
 
@@ -647,7 +601,6 @@ function viewDash(c){
     <div class="spark" id="spark" aria-label="Equity curve"></div>
   </section>
 
-  ${apCard()}
   ${exAcctCard()}
   <section class="card next">
     <div class="sechead"><div class="label">Next trade risk</div>${c.brake?`<span class="chip warn">Brake on · down ${pct(c.dd)}</span>`:`<span class="chip up">Brake off</span>`}</div>
@@ -685,23 +638,6 @@ function viewDash(c){
       <div><span class="k" style="color:var(--ink-2);font-size:13px">Compound</span><span class="num ${st.mode!=="flat"?"on":""}">${money(c.comp.bal)}</span><span class="num" style="font-size:12.5px;color:var(--ink-3)">max DD ${pct(c.comp.dd)}</span></div>
       <div><span class="k" style="color:var(--ink-2);font-size:13px">Flat</span><span class="num ${st.mode==="flat"?"on":""}">${money(c.flat.bal)}</span><span class="num" style="font-size:12.5px;color:var(--ink-3)">max DD ${pct(c.flat.dd)}</span></div>
     </div>
-  </section>`;
-}
-
-function apCard(){
-  const a=S.settings.ap, key=keyInfo(tradeSlot());
-  if(!key) return `<section class="card next" id="ap-dash"><div class="sechead"><div class="label">Autopilot</div><span class="chip mute">Not set up</span></div>
-    <div class="note" style="margin:0">Let the app place your stop loss and TP1–TP4 on Binance Futures and manage them by the plan, so emotions don't make the exits.</div>
-    <button class="btn ghost" data-act="goAp">Set up autopilot</button></section>`;
-  const stt=apStatus(), st=stt.state||{}, ov=stt.overrides||{};
-  const rows=Object.entries(st).filter(([k,v])=>v&&v.managed).map(([k,v])=>{ const hits=(v.tps||[]).filter(t=>t.hit).length;
-    return `<div class="kv"><span class="k">${esc(pairLabel(v.sym))} <span class="dir ${v.side==="S"?"S":"L"}">${v.side==="S"?"SHORT":"LONG"}</span></span><span class="v num">${hits?`TP${hits} ✓`:"no TP yet"}<br><span style="font-size:12px;color:var(--ink-3)">stop ${price(v.sl&&v.sl.price)}${v.be?" (breakeven)":""}</span></span></div>`; }).join("");
-  const waiting=Object.keys(ov).filter(k=>!st["binance|"+k]).length;
-  const on = stt.running;
-  return `<section class="card next" id="ap-dash">
-    <div class="sechead"><div class="label">Autopilot${a.testnet?" · testnet":""}</div>${on?`<span class="chip up"><span class="livedot"></span>Running</span>`:`<span class="chip mute">Only while app is open</span>`}</div>
-    ${rows || `<div class="note" style="margin:0">${waiting?`${waiting} entry order${waiting>1?"s":""} waiting to fill.`:"No positions under autopilot. Place a trade from + New trade."}</div>`}
-    <span class="hint" style="font-size:12.5px;color:var(--ink-3)">${stt.lastRun?`Last check ${new Date(stt.lastRun).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit",second:"2-digit"})} · ${esc(stt.lastLine||"")}`:"Not checked yet"}</span>
   </section>`;
 }
 
@@ -757,7 +693,7 @@ function viewTrades(c){
     const lv = !t.outcome && live[liveKey(t)];
     const sub2 = t.outcome ? `<span class="sub rt num ${cls(t._pnl)}">${smoney(t._pnl)}</span>`
       : lv ? `<span class="sub rt num ${cls(openR(t,lv.p))}" data-lv="${esc(t.id)}">now ${R(openR(t,lv.p))}</span>` : `<span class="sub rt num" data-lv="${esc(t.id)}">risk ${money(t.riskUsd)}</span>`;
-    return `<button class="trow" data-open="${esc(t.id)}"><span class="pair"><span class="dir ${t.dir==="Short"?"S":"L"}">${t.dir==="Short"?"SHORT":"LONG"}</span>${esc(pairLabel(t.pair))}${t.ex&&EX[t.ex]?`<span class="exn">${EX[t.ex].name}</span>`:""}${t.autopilot&&!t.outcome?`<span class="exn" style="color:var(--accent)">${t.status==="pending"?"WAITING":"AUTO"}</span>`:""}</span>${res}
+    return `<button class="trow" data-open="${esc(t.id)}"><span class="pair"><span class="dir ${t.dir==="Short"?"S":"L"}">${t.dir==="Short"?"SHORT":"LONG"}</span>${esc(pairLabel(t.pair))}${t.ex&&EX[t.ex]?`<span class="exn">${EX[t.ex].name}</span>`:""}</span>${res}
       <span class="sub num">${esc(t.date)} · ${t.outcome?esc(t.outcome):"@ "+price(t.entry)}${t.lev>1?` · ${t.lev}x`:""}</span>${sub2}</button>`;
   }).join("");
   const a=accounts(); const posList=ACCT_EX.filter(k=>a[k]&&keyInfo(k)).flatMap(k=>(a[k].positions||[]).map(p=>({...p, ex:k})));
@@ -845,8 +781,6 @@ function viewSettings(){
     ${st.capitalFrom?`<span class="hint" style="font-size:12.5px;color:var(--ink-3)">Starting capital taken from ${esc(st.capitalFrom)}. Open-position P&amp;L isn't included.</span>`:""}
   </section>
 
-  ${apSettings()}
-
   <section class="card form">
     <div class="label">Appearance</div>
     <div class="seg" id="s-theme">${["system","light","dark"].map(k=>`<button data-theme-set="${k}" aria-pressed="${(st.theme||"system")===k}">${k==="system"?"System":k==="light"?"Light":"Dark"}</button>`).join("")}</div>
@@ -897,12 +831,11 @@ function viewSettings(){
 
   <section class="card form">
     <div class="label">Take-profit plan</div>
-    <div class="field"><label>Targets set as</label><div class="seg" id="s-tpmode"><button data-tpm="R" aria-pressed="${st.tpMode!=="pct"}">R (× stop distance)</button><button data-tpm="pct" aria-pressed="${st.tpMode==="pct"}">% move from entry</button></div></div>
-    <div class="tps"><span></span><span class="h">${st.tpMode==="pct"?"Move (%)":"Target (R)"}</span><span class="h">Close (%)</span>
-      ${st.tps.map((t,i)=>`<b>TP${i+1}</b><input id="s-tpr${i}" inputmode="decimal" value="${st.tpMode==="pct"?(t.mv??(i+1)):t.r}" aria-label="TP${i+1} target"><input id="s-tpp${i}" inputmode="decimal" value="${t.pct}" aria-label="TP${i+1} close percent">`).join("")}
+    <div class="tps"><span></span><span class="h">Target (R)</span><span class="h">Close (%)</span>
+      ${st.tps.map((t,i)=>`<b>TP${i+1}</b><input id="s-tpr${i}" inputmode="decimal" value="${t.r}" aria-label="TP${i+1} R"><input id="s-tpp${i}" inputmode="decimal" value="${t.pct}" aria-label="TP${i+1} close percent">`).join("")}
     </div>
     <div id="tpwarn" class="err" ${Math.round(tpSum)===100?"hidden":""}>Close % adds up to ${tpSum}%. It should be 100%.</div>
-    <span class="hint" style="font-size:12.5px;color:var(--ink-3)">${st.tpMode==="pct"?"Each TP is a price move from entry, e.g. 2% means 2% above entry on a long.":"1R is the distance from entry to stop loss."} Close % is how much of the position each TP sells. The last TP closes whatever is left.</span>
+    <span class="hint" style="font-size:12.5px;color:var(--ink-3)">1R is the distance from entry to stop loss. After TP1 the rest is assumed to exit at breakeven if price comes back.</span>
   </section>
 
   <section class="card form">
@@ -911,28 +844,6 @@ function viewSettings(){
     <button class="btn ghost" data-act="restore">Restore from backup</button>
     <div id="dangerZone"><button class="btn danger" data-act="askReset">Delete all trades</button></div>
     <span class="hint" style="font-size:12.5px;color:var(--ink-3)">${Native?"Trades are saved on this phone.":"In this preview, trades are saved in this browser only."}</span>
-  </section>`;
-}
-
-function apSettings(){
-  const a=S.settings.ap, slot=tradeSlot(), key=keyInfo(slot);
-  let batt=true; try{ batt = !(Native && Native.batteryFree) || Native.batteryFree(); }catch(e){}
-  const stt=apStatus();
-  return `<section class="card form" id="ap-settings">
-    <div class="sechead"><div class="label">Autopilot · Binance Futures</div>${stt.running?`<span class="chip up">Running</span>`:`<span class="chip mute">Off</span>`}</div>
-    <span class="hint" style="font-size:13px;color:var(--ink-2)">Places your stop loss and TP1–TP4 (each closing the % in your take-profit plan), moves the stop to breakeven after TP1, and puts the stop back if it goes missing. The plan runs the exits, not the mood of the moment.</span>
-    <div class="field"><label>Account</label><div class="seg" id="ap-acct"><button data-acct="live" aria-pressed="${!a.testnet}">Live</button><button data-acct="test" aria-pressed="${!!a.testnet}">Testnet (practice)</button></div></div>
-    <div class="acct"><div><div class="n">${slotName(slot)} trading key</div><div class="s">${key?`Key ${esc(key)}`:"Not connected"}</div></div>
-      <button class="btn ${key?"ghost":""} sm" data-act="apConnect">${key?"Replace":"Connect"}</button></div>
-    ${key?`<button class="btn ghost" data-act="apCheck">Check trading permission</button>`:""}
-    <div id="ap-check" class="hint" style="font-size:13px" hidden></div>
-    <label class="toggle" for="s-apbg"><span>Keep running in the background<br><span class="hint" style="font-size:12.5px;color:var(--ink-3)">Checks Binance every 5 seconds with a notification showing. Off: it only works while the app is open.</span></span><input type="checkbox" id="s-apbg" ${a.bg?"checked":""} ${key?"":"disabled"}></label>
-    ${a.bg && !batt?`<button class="btn ghost" data-act="apBattery">Let it run with the screen off</button>`:""}
-    <label class="toggle" for="s-apbe"><span>Move stop to breakeven after TP1</span><input type="checkbox" id="s-apbe" ${a.beAfterTP1!==false?"checked":""}></label>
-    <div class="field"><label for="s-apbeo">Breakeven buffer (% past entry, covers fees)</label><input id="s-apbeo" class="num" inputmode="decimal" value="${a.beOffsetPct}"></div>
-    <label class="toggle" for="s-apman"><span>Also manage positions I open in the Binance app<br><span class="hint" style="font-size:12.5px;color:var(--ink-3)">Only positions without their own stop or take-profit orders.</span></span><input type="checkbox" id="s-apman" ${a.manageManual?"checked":""}></label>
-    <div class="field" ${a.manageManual?"":"hidden"} id="f-apsl"><label for="s-apsl">Stop loss for those positions (% from entry)</label><input id="s-apsl" class="num" inputmode="decimal" value="${a.slPct}"></div>
-    ${!a.testnet?`<div class="warnbox">Live trading needs <b>Enable Futures</b> ticked on your Binance key (keep Withdrawals off). Binance deletes keys that can trade without an IP restriction after a while; you'll then need to make a new key. Practise on Testnet first.</div>`:""}
   </section>`;
 }
 
@@ -950,16 +861,9 @@ function bindSettings(){
   $("s-scope").addEventListener("click",e=>{ const b=e.target.closest("button"); if(!b) return; st.balScope=b.dataset.scope; persist(); render(); });
   if($("s-src")) $("s-src").addEventListener("click",e=>{ const b=e.target.closest("button"); if(!b) return; st.rateSrc=b.dataset.src; persist(); render(); doUpdateRate(); });
   $("s-mkt").addEventListener("click",e=>{ const b=e.target.closest("button"); if(!b) return; st.market=b.dataset.mkt; persist(); render(); });
-  $("s-tpmode").addEventListener("click",e=>{ const b=e.target.closest("button"); if(!b) return; st.tpMode=b.dataset.tpm; persist(); render(); });
-  $("ap-acct").addEventListener("click",e=>{ const b=e.target.closest("button"); if(!b) return; const t=b.dataset.acct==="test"; if(t!==!!st.ap.testnet){ st.ap.testnet=t; if(st.ap.bg && Native){ st.ap.bg=false; Native.apStop(); } persist(); render(); toast(t?"Testnet: practice money only":"Live: real money"); } });
-  $("s-apbg").addEventListener("change",e=>{ st.ap.bg=e.target.checked; persist(); if(Native){ if(st.ap.bg){ try{ Native.askNotifications(); }catch(x){} Native.apStart(); toast("Autopilot running in the background"); } else { Native.apStop(); toast("Background autopilot off"); } } setTimeout(render,600); });
-  $("s-apbe").addEventListener("change",e=>{ st.ap.beAfterTP1=e.target.checked; persist(); });
-  $("s-apbeo").addEventListener("change",e=>{ const v=parseFloat(e.target.value); if(v>=0 && v<5){ st.ap.beOffsetPct=v; persist(); } });
-  $("s-apman").addEventListener("change",e=>{ st.ap.manageManual=e.target.checked; persist(); $("f-apsl").hidden=!e.target.checked; });
-  $("s-apsl").addEventListener("change",e=>{ const v=parseFloat(e.target.value); if(v>0 && v<50){ st.ap.slPct=v; persist(); } });
   $("s-theme").addEventListener("click",e=>{ const b=e.target.closest("button"); if(!b) return; st.theme=b.dataset.themeSet; persist(); applyTheme(); render(); });
   st.tps.forEach((t,i)=>{
-    [["s-tpr"+i, st.tpMode==="pct"?"mv":"r"],["s-tpp"+i,"pct"]].forEach(([id,k])=>{ const el=$(id);
+    [["s-tpr"+i,"r"],["s-tpp"+i,"pct"]].forEach(([id,k])=>{ const el=$(id);
       el.addEventListener("input",()=>{ const v=parseFloat(el.value); if(isFinite(v)&&v>=0){ t[k]=v; persist(); const s=st.tps.reduce((a,b)=>a+Number(b.pct||0),0); const w=$("tpwarn"); w.hidden=Math.round(s)===100; w.textContent=`Close % adds up to ${s}%. It should be 100%.`; }});
     });
   });
@@ -987,7 +891,7 @@ function newTradeSheet(pre){
     <div class="field"><label>Direction</label><div class="seg" id="n-dir"><button type="button" data-dir="Long" aria-pressed="${ui.sheet.dir!=="Short"}">Long</button><button type="button" data-dir="Short" aria-pressed="${ui.sheet.dir==="Short"}">Short</button></div></div>
     <div class="two">
       <div class="field" id="f-entry"><div class="lblrow"><label for="n-entry">Entry price</label><button type="button" class="linkbtn" id="n-live">Live</button></div><input id="n-entry" class="num" inputmode="decimal" placeholder="0.00" value="${pre.entry||""}"></div>
-      <div class="field" id="f-sl"><div class="lblrow"><label for="n-sl">Stop loss</label><button type="button" class="linkbtn" id="n-defsl">${S.settings.ap.slPct}%</button></div><input id="n-sl" class="num" inputmode="decimal" placeholder="0.00" value="${pre.sl||""}"></div>
+      <div class="field" id="f-sl"><label for="n-sl">Stop loss</label><input id="n-sl" class="num" inputmode="decimal" placeholder="0.00" value="${pre.sl||""}"></div>
     </div>
     <div id="n-livemsg" class="hint" style="font-size:12.5px;color:var(--ink-3);margin-top:-4px" hidden></div>
     <div class="two">
@@ -999,21 +903,12 @@ function newTradeSheet(pre){
     <div class="card preview" id="n-prev"></div>
     <div class="field"><label for="n-note">Note (optional)</label><input id="n-note" placeholder="Setup, timeframe, reason" value="${pre.tps&&pre.tps.length? esc("Exchange TP "+pre.tps.map(price).join(" / ")) : ""}"></div>
     <div id="n-err" class="err" hidden></div>
-    <div id="ap-place" class="form" hidden>
-      <div class="field"><label>Entry order on Binance</label><div class="seg" id="n-etype"><button type="button" data-et="MARKET" aria-pressed="${(pre.etype||"MARKET")==="MARKET"}">Market (now)</button><button type="button" data-et="LIMIT" aria-pressed="${pre.etype==="LIMIT"}">Limit at entry</button></div></div>
-      <button class="btn" type="button" data-act="placeReview">Review and place on Binance</button>
-    </div>
-    <button class="btn" type="submit" id="n-save">Save open trade</button>
+    <button class="btn" type="submit">Save open trade</button>
   </form>`);
   const upd=()=>updatePreview(c);
   ["n-entry","n-sl","n-risk","n-lev"].forEach(id=>$(id).addEventListener("input",upd));
-  ui.sheet.etype = pre.etype || "MARKET";
-  const apVis=()=>{ const on = ui.sheet.ex==="binance" && ui.sheet.market!=="spot" && !!keyInfo(tradeSlot());
-    $("ap-place").hidden=!on; $("n-save").className = on? "btn ghost" : "btn"; $("n-save").textContent = on? "Log only (no orders)" : "Save open trade"; };
-  $("n-ex").addEventListener("change",e=>{ ui.sheet.ex=e.target.value; apVis(); });
-  $("n-etype").addEventListener("click",e=>{ const b=e.target.closest("button"); if(!b) return; ui.sheet.etype=b.dataset.et; $("n-etype").querySelectorAll("button").forEach(x=>x.setAttribute("aria-pressed",String(x===b))); });
-  $("n-defsl").addEventListener("click",()=>{ const en=parseFloat($("n-entry").value); if(!(en>0)){ toast("Enter the entry price first"); return; } const d=en*S.settings.ap.slPct/100; $("n-sl").value=+(ui.sheet.dir==="Short"? en+d : en-d).toPrecision(8); upd(); });
-  $("n-mkt").addEventListener("click",e=>{ const b=e.target.closest("button"); if(!b) return; ui.sheet.market=b.dataset.mkt; $("n-mkt").querySelectorAll("button").forEach(x=>x.setAttribute("aria-pressed",String(x===b))); $("f-lev").hidden=ui.sheet.market==="spot"; apVis(); upd(); });
+  $("n-ex").addEventListener("change",e=>{ ui.sheet.ex=e.target.value; });
+  $("n-mkt").addEventListener("click",e=>{ const b=e.target.closest("button"); if(!b) return; ui.sheet.market=b.dataset.mkt; $("n-mkt").querySelectorAll("button").forEach(x=>x.setAttribute("aria-pressed",String(x===b))); $("f-lev").hidden=ui.sheet.market==="spot"; upd(); });
   $("n-live").addEventListener("click",async()=>{ const msg=$("n-livemsg"), btn=$("n-live"); msg.hidden=false;
     if(!splitPair($("n-pair").value)){ msg.textContent="Enter the pair first, for example BTC/USDT."; return; }
     btn.disabled=true; msg.textContent="Getting price…";
@@ -1022,11 +917,6 @@ function newTradeSheet(pre){
     btn.disabled=false; });
   $("n-dir").addEventListener("click",e=>{ const b=e.target.closest("button"); if(!b) return; ui.sheet.dir=b.dataset.dir; $("n-dir").querySelectorAll("button").forEach(x=>x.setAttribute("aria-pressed",String(x===b))); upd(); });
   $("ntf").addEventListener("submit",e=>{ e.preventDefault(); saveNew(); });
-  apVis();
-  if(pre.risk>0 && $("n-risk")) $("n-risk").value=(+pre.risk).toFixed(2);
-  if(pre.lev && $("n-lev")) $("n-lev").value=pre.lev;
-  if(pre.date && $("n-date")) $("n-date").value=pre.date;
-  if(pre.note!=null && $("n-note")) $("n-note").value=pre.note;
   upd();
 }
 function readNew(){
@@ -1060,7 +950,7 @@ function updatePreview(c){
     ${fut&&L.liqFirst?`<div class="warnbox" style="margin-top:8px"><b>Liquidation comes before your stop loss.</b> At ${L.lev}x you'd be liquidated around ${price(L.liq)}, before the stop at ${price(v.sl)}. Use ${L.maxLev}x or less.</div>`
       : fut&&L.tooHigh?`<div class="warnbox" style="margin-top:8px">${L.lev}x leaves almost no room between the stop and liquidation. ${L.maxLev}x or less is safer.</div>`:""}
     ${fut&&bal>0&&L.margin>bal?`<div class="warnbox" style="margin-top:8px">This needs ${money(L.margin)} margin, more than your balance. Raise the leverage or lower the risk.</div>`:""}
-    <div class="tplist">${planTPs(v.entry,v.sl,v.dir).map((t,i)=>`<div><span class="label">TP${i+1} · ${tpLabel(S.settings.tps[i],i)}</span><span class="num">${price(t.price)}</span><span style="font-size:11px;color:var(--ink-3)">close ${t.close}%</span></div>`).join("")}</div>`;
+    <div class="tplist">${S.settings.tps.map((t,i)=>`<div><span class="label">TP${i+1} · ${t.r}R</span><span class="num">${price(tpPrice(v.entry,v.sl,v.dir,t.r))}</span></div>`).join("")}</div>`;
 }
 function saveNew(){
   const v=readNew(); const e=$("n-err");
@@ -1070,100 +960,15 @@ function saveNew(){
   S.settings.exchange=ui.sheet.ex; S.settings.market=ui.sheet.market; if(ui.sheet.market!=="spot") S.settings.leverage=v.lev;
   S.trades.push({id:uid(), created:Date.now(), date:$("n-date").value||todayStr(), pair, ex:ui.sheet.ex, market:ui.sheet.market, lev:v.lev, dir:v.dir, entry:v.entry, sl:v.sl,
     riskPct: bal.bal>0? +(v.risk/(S.settings.mode==="flat"?bal.cap:bal.bal)*100).toFixed(3) : 0, riskUsd:+v.risk.toFixed(2),
-    outcome:null, manualR:null, fees:0, note:($("n-note").value||"").trim(), closedAt:null, posKey:ui.sheet.posKey||null,
-    ...(()=>{ const tp=planTPs(v.entry,v.sl,v.dir); return { tpPrices:tp.map(x=>x.price), tpR:tp.map(x=>+x.r.toFixed(4)), tpClose:tp.map(x=>x.close) }; })()});
+    outcome:null, manualR:null, fees:0, note:($("n-note").value||"").trim(), closedAt:null, posKey:ui.sheet.posKey||null});
   persist(); ui.tab="trades"; ui.filter="all"; closeSheet(); toast("Trade saved");
-}
-
-// Review screen: everything that will be sent to Binance, before anything is sent.
-function placeReview(){
-  const v=readNew(); const e=$("n-err");
-  if(v.err){ e.hidden=false; e.textContent=v.err; return; }
-  const sp=splitPair($("n-pair").value); if(!sp){ e.hidden=false; e.textContent="Enter the pair, for example BTC/USDT."; return; }
-  const tpSum=S.settings.tps.reduce((a,t)=>a+(Number(t.pct)||0),0);
-  if(Math.round(tpSum)!==100){ e.hidden=false; e.textContent=`Your take-profit plan closes ${tpSum}% in total. Set it to 100% in Settings first.`; return; }
-  const side=v.dir==="Short"?"S":"L", qty=v.risk/Math.abs(v.entry-v.sl), value=qty*v.entry;
-  const L=levInfo(v.entry,v.sl,v.dir,value,v.lev,S.settings.mmr);
-  if(L.liqFirst){ e.hidden=false; e.textContent=`At ${v.lev}x you'd be liquidated before your stop. Use ${L.maxLev}x or less.`; return; }
-  const tps=planTPs(v.entry,v.sl,v.dir), et=ui.sheet.etype||"MARKET", test=!!S.settings.ap.testnet;
-  ui.sheet.draft={ symbol:sp.b+sp.q, side, type:et, qty, price:v.entry, leverage:Math.round(v.lev), sl:v.sl, tps:tps.map(t=>t.price), closes:tps.map(t=>t.close),
-    risk:v.risk, dir:v.dir, entry:v.entry, pair:sp.b+"/"+sp.q, date:$("n-date").value||todayStr(), note:($("n-note").value||"").trim(), tpR:tps.map(t=>+t.r.toFixed(4)) };
-  const d=ui.sheet.draft, prev={ex:"binance", market:"futures", pair:d.pair, entry:d.entry, sl:d.sl, dir:d.dir, lev:d.leverage, risk:d.risk, date:d.date, note:d.note, etype:et};
-  ui.sheet.prev=prev;
-  openSheet(`<header><h2>Place on Binance${test?" Testnet":""}</h2><button class="x" data-act="close" aria-label="Close">×</button></header>
-  <div class="form">
-    ${test?"":`<div class="warnbox"><b>Live account, real money.</b> These orders go to Binance Futures as soon as you tap Place.</div>`}
-    <section class="card preview">
-      <div class="kv"><span class="k">${esc(d.pair)}</span><span class="v"><span class="dir ${side==="S"?"S":"L"}">${side==="S"?"SHORT":"LONG"}</span> ${d.leverage}x</span></div>
-      <div class="kv"><span class="k">Entry</span><span class="v">${et==="MARKET"?`Market, now (≈ ${price(d.entry)})`:`Limit at ${price(d.entry)}`}</span></div>
-      <div class="kv"><span class="k">Size</span><span class="v">${units(qty)} ${esc(sp.b)} · ${money(value)} USDT</span></div>
-      <div class="kv"><span class="k">Margin</span><span class="v">${money(L.margin)} USDT</span></div>
-      <div class="kv"><span class="k">Stop loss</span><span class="v down">${price(d.sl)}</span></div>
-      ${tps.map((t,i)=>`<div class="kv"><span class="k">TP${i+1} · close ${t.close}%</span><span class="v up">${price(t.price)}</span></div>`).join("")}
-      <div class="kv"><span class="k">Risk if stopped</span><span class="v">${money(d.risk)} USDT</span></div>
-      <div class="kv"><span class="k">After TP1</span><span class="v" style="font-family:var(--f-ui)">${S.settings.ap.beAfterTP1!==false?"stop moves to breakeven":"stop stays"}</span></div>
-    </section>
-    <div id="pl-err" class="err" hidden></div>
-    <button class="btn" data-act="placeGo" id="pl-go">Place orders</button>
-    <button class="btn ghost" data-act="placeBack">Back</button>
-    <span class="hint" style="font-size:12.5px;color:var(--ink-3)">${et==="MARKET"?"The stop and take-profits are placed within seconds of the entry filling.":"The stop and take-profits are placed when the limit order fills."} ${S.settings.ap.bg?"":"Turn on background autopilot in Settings so this also happens while the app is closed."}</span>
-  </div>`);
-}
-async function placeGo(){
-  const d=ui.sheet.draft, btn=$("pl-go"), err=$("pl-err"); if(!d) return;
-  btn.disabled=true; btn.textContent="Placing…"; err.hidden=true;
-  try{
-    const r=await fut("open", d);
-    if(!r.ok){ btn.disabled=false; btn.textContent="Place orders"; err.hidden=false; err.textContent=r.error||"Binance rejected the order."; return; }
-    const c=compute(S.settings,S.trades);
-    S.trades.push({ id:uid(), created:Date.now(), date:d.date, pair:d.symbol, ex:"binance", market:"futures", lev:d.leverage, dir:d.dir, entry:d.entry, sl:d.sl,
-      riskPct: c.bal>0? +(d.risk/c.bal*100).toFixed(3):0, riskUsd:+d.risk.toFixed(2), outcome:null, manualR:null, fees:0, note:d.note, closedAt:null,
-      posKey:`binance|${d.symbol}|${d.side}`, autopilot:true, testnet:!!S.settings.ap.testnet, orderId:r.orderId, entryType:d.type,
-      status: d.type==="LIMIT" && r.status!=="FILLED" ? "pending" : "open", qty:r.qty, tpPrices:d.tps, tpR:d.tpR, tpClose:d.closes });
-    S.settings.exchange="binance"; S.settings.market="futures"; S.settings.leverage=d.leverage;
-    persist(); ui.tab="trades"; ui.filter="all"; closeSheet();
-    toast(d.type==="LIMIT" && r.status!=="FILLED" ? "Limit order placed. Exits go on when it fills." : "Trade opened. Stop and take-profits placed.");
-  }catch(e){ btn.disabled=false; btn.textContent="Place orders"; err.hidden=false; err.textContent=String(e.message||e); }
-}
-
-function apTradeBox(t){
-  if(!t.autopilot || t.outcome) return "";
-  const stt=apStatus(), s=(stt.state||{})[t.posKey], ov=(stt.overrides||{})[t.posKey.replace(/^binance\|/,"")];
-  let body;
-  if(s && s.managed){
-    body = `<div class="kv"><span class="k">Stop</span><span class="v">${price(s.sl&&s.sl.price)}${s.be?" · breakeven":""}</span></div>`
-      + (s.tps||[]).map(x=>`<div class="kv"><span class="k">TP${x.n} · ${x.qty==="rest"?"rest":units(+x.qty)}</span><span class="v ${x.hit?"up":""}">${price(x.price)} ${x.hit?"✓ hit":x.failed?"not placed":x.done?"cancelled":"waiting"}</span></div>`).join("");
-  } else if(ov || t.status==="pending"){
-    body = `<div class="note" style="margin:0">Waiting for the entry order to fill at ${price(t.entry)}. The stop and take-profits go on as soon as it does.</div>`;
-  } else body = `<div class="note" style="margin:0">${stt.lastRun?"No open position for this trade on Binance right now.":"Not checked yet."}</div>`;
-  return `<section class="card preview" id="ap-trade"><div class="sechead"><div class="label">Autopilot${t.testnet?" · testnet":""}</div><span class="chip ${s&&s.managed?"up":"mute"}">${s&&s.managed?"Managing":t.status==="pending"?"Waiting":"Idle"}</span></div>${body}</section>
-    ${t.status==="pending"?`<button class="btn ghost" data-act="apCancelEntry">Cancel entry order</button>`:""}
-    <div id="ap-close-zone"><button class="btn danger" data-act="apAskClose">Close now at market</button></div>`;
-}
-async function apDoClose(){
-  const t=S.trades.find(x=>x.id===ui.sheet.id); if(!t) return;
-  const zone=$("ap-close-zone"); zone.innerHTML=`<div class="note">Closing on Binance…</div>`;
-  const [sym, side]=t.posKey.split("|").slice(1);
-  const stt=apStatus(), s=(stt.state||{})[t.posKey];
-  let px=null; try{ px=await livePrice("binance","futures",t.pair); }catch(e){}
-  try{
-    t.closingByApp=true; persist();
-    const r=await fut("close",{symbol:sym, side});
-    if(!r.ok){ t.closingByApp=false; persist(); zone.innerHTML=`<div class="err">${esc(r.error||"Binance rejected the close.")}</div>`; return; }
-    // Result: take-profits already hit, plus the rest closed at the current price.
-    let rr=0, left=100;
-    if(s && s.tps) s.tps.forEach(x=>{ if(x.hit){ const i=x.n-1, c=(t.tpClose||[])[i]||0; rr += ((t.tpR||[])[i]||0)*c/100; left-=c; } });
-    if(px) rr += Math.max(0,left)/100 * openR(t,px);
-    t.outcome="Manual"; t.manualR=+rr.toFixed(3); t.closedAt=Date.now(); t.status="closed";
-    persist(); closeSheet(); toast(`Closed at market · ${R(rr)}`);
-  }catch(e){ t.closingByApp=false; persist(); zone.innerHTML=`<div class="err">${esc(String(e.message||e))}</div>`; }
 }
 
 function tradeSheet(id){
   const t=S.trades.find(x=>x.id===id); if(!t) return;
   ui.sheet={kind:"trade", id, outcome:t.outcome, confirmDel:false};
   const st=S.settings, size=t.riskUsd/Math.abs(t.entry-t.sl);
-  const outBtns=OUTS.concat(["Manual"]).map(o=>`<button type="button" data-out="${o}" aria-pressed="${t.outcome===o}">${o}<small>${o==="Manual"?"custom":R(rFor(o,0,st,t))}</small></button>`).join("");
+  const outBtns=OUTS.concat(["Manual"]).map(o=>`<button type="button" data-out="${o}" aria-pressed="${t.outcome===o}">${o}<small>${o==="Manual"?"custom":R(rFor(o,0,st))}</small></button>`).join("");
   openSheet(`<header><h2><span class="dir ${t.dir==="Short"?"S":"L"}" style="vertical-align:3px">${t.dir==="Short"?"SHORT":"LONG"}</span> ${esc(pairLabel(t.pair))}</h2><button class="x" data-act="close" aria-label="Close">×</button></header>
   <section class="card preview">
     <div class="kv"><span class="k">Date</span><span class="v">${esc(t.date)}</span></div>
@@ -1173,11 +978,10 @@ function tradeSheet(id){
     <div class="kv"><span class="k">Size</span><span class="v">${units(size)} units</span></div>
     ${t.lev>1?(()=>{ const L=levInfo(t.entry,t.sl,t.dir,size*t.entry,t.lev,st.mmr); return `<div class="kv"><span class="k">Leverage · margin</span><span class="v">${L.lev}x · ${money(L.margin)}</span></div>
     <div class="kv"><span class="k">Liquidation ≈</span><span class="v ${L.liqFirst?"down":""}">${price(L.liq)}${L.liqFirst?"<br><span style='font-size:12px'>before your stop</span>":""}</span></div>`; })():""}
-    <div class="tplist">${(t.tpPrices || planTPs(t.entry,t.sl,t.dir).map(x=>x.price)).map((p,i)=>`<div><span class="label">TP${i+1}</span><span class="num">${price(p)}</span></div>`).join("")}</div>
+    <div class="tplist">${st.tps.map((x,i)=>`<div><span class="label">TP${i+1}</span><span class="num">${price(tpPrice(t.entry,t.sl,t.dir,x.r))}</span></div>`).join("")}</div>
     ${t.note?`<div class="note">${esc(t.note)}</div>`:""}
     ${!t.outcome && t.ex && EX[t.ex] ? `<div class="kv live" id="t-live"><span class="k">Now</span><span class="v">${Native?"Loading…":"Live prices work in the Android app"}</span></div>`:""}
   </section>
-  ${apTradeBox(t)}
   ${t.ex && EX[t.ex] ? `<a class="btn ghost" href="${esc(tradeLink(t.ex,t.market,t.pair))}" target="_blank" rel="noopener">Open ${esc(pairLabel(t.pair))} on ${EX[t.ex].name}</a>`:""}
   <form id="cf" class="form" novalidate>
     <div class="label">${t.outcome?"Result":"Close the trade"}</div>
@@ -1192,7 +996,7 @@ function tradeSheet(id){
   </form>`);
   const upd=()=>{ const o=ui.sheet.outcome; const box=$("c-res");
     if(!o){ box.innerHTML=`<span class="note" style="margin:0">Pick where the trade ended.</span>`; return; }
-    const r=rFor(o,$("c-man").value,st,t), fee=parseFloat($("c-fee").value)||0, pnl=r*t.riskUsd-fee;
+    const r=rFor(o,$("c-man").value,st), fee=parseFloat($("c-fee").value)||0, pnl=r*t.riskUsd-fee;
     box.innerHTML=`<div class="kv"><span class="k">Result</span><span class="v num ${cls(r)}">${R(r)}</span></div><div class="kv"><span class="k">P&amp;L after fees</span><span class="v num ${cls(pnl)}">${smoney(pnl)}${hasSec()?`<br><span style="font-size:12.5px;color:var(--ink-3)">${secTxt(pnl)}</span>`:""}</span></div>`; };
   if(!t.outcome && t.ex && EX[t.ex] && Native){ refreshLive([t]).then(()=>{ if(!live[liveKey(t)]){ const el=$("t-live"); if(el) el.querySelector(".v").textContent="Price unavailable"; } else paintLive(); }); }
   $("c-outs").addEventListener("click",e=>{ const b=e.target.closest("button"); if(!b) return; ui.sheet.outcome=b.dataset.out;
@@ -1206,20 +1010,13 @@ function tradeSheet(id){
   upd();
 }
 
-function connectSheet(ex, trading){
-  ui.sheet={kind:"connect", ex, trading:!!trading};
+function connectSheet(ex){
+  ui.sheet={kind:"connect", ex};
   const where = ex==="mexc" ? "MEXC: profile icon → API Management → Create API key" : "Binance: profile icon → Account → API Management → Create API → System generated";
-  const body = !trading
-    ? `<ol class="steps"><li>${esc(where)}.</li><li>Give it <b>read / view permission only</b>. Leave trading, withdrawals and transfers off.</li><li>Copy the API key and secret here.</li></ol>
-    <div class="warnbox">Risk Ledger only reads balances and open positions. A read-only key can't place orders or move funds, even if someone got it.</div>`
-    : ex==="binancetest"
-    ? `<ol class="steps"><li>Open <b>testnet.binancefuture.com</b> in a browser and log in (it uses practice money).</li><li>Open the <b>API Key</b> tab under the trading screen and copy the key and secret.</li><li>Paste them here.</li></ol>
-    <div class="warnbox">Testnet orders use practice funds, so you can try the whole autopilot without risking money.</div>`
-    : `<ol class="steps"><li>Binance: profile icon → Account → API Management. Use your existing key or create one.</li><li><b>Edit restrictions</b>: keep Enable Reading, tick <b>Enable Futures</b>. Leave <b>Withdrawals</b> and transfers off.</li><li>Copy the API key and secret here.</li></ol>
-    <div class="warnbox">This key can open and close futures trades. It can't withdraw funds. Keys are encrypted on this phone and never included in backups.</div>`;
-  openSheet(`<header><h2>Connect ${slotName(ex)}${trading?" trading":""}</h2><button class="x" data-act="close" aria-label="Close">×</button></header>
+  openSheet(`<header><h2>Connect ${EX[ex].name}</h2><button class="x" data-act="close" aria-label="Close">×</button></header>
   <div class="form">
-    ${body}
+    <ol class="steps"><li>${esc(where)}.</li><li>Give it <b>read / view permission only</b>. Leave trading, withdrawals and transfers off.</li><li>Copy the API key and secret here.</li></ol>
+    <div class="warnbox">Risk Ledger only reads balances and open positions. A read-only key can't place orders or move funds, even if someone got it.</div>
     <div class="field"><label for="k-key">API key</label><input id="k-key" autocomplete="off" autocapitalize="off" spellcheck="false"></div>
     <div class="field"><label for="k-sec">Secret key</label><input id="k-sec" type="password" autocomplete="off" autocapitalize="off" spellcheck="false"></div>
     <div id="k-msg" class="err" hidden></div>
@@ -1231,14 +1028,7 @@ async function saveKeyFlow(){
   const show=(t,ok)=>{ msg.hidden=false; msg.textContent=t; msg.style.color=ok?"var(--up)":"var(--down)"; };
   if(!Native||!Native.saveKeys) return show("Exchange accounts work in the Android app.");
   const err=Native.saveKeys(ex,$("k-key").value,$("k-sec").value); if(err) return show(err);
-  btn.disabled=true; show("Checking with "+slotName(ex)+"…",true);
-  if(ui.sheet.trading){
-    try{ const r=await fut("check");
-      if(!r.ok){ btn.disabled=false; return show("Binance rejected the key: "+(r.error||"unknown error")); }
-      closeSheet(); toast(r.canTrade? `${slotName(ex)} connected · ${money(r.wallet)} USDT, trading allowed` : `Connected, but trading is off. Tick Enable Futures on the key.`); }
-    catch(e){ btn.disabled=false; show(String(e.message||e)); }
-    return;
-  }
+  btn.disabled=true; show("Checking with "+EX[ex].name+"…",true);
   try{ const a=await fetchAccount(ex); S.accounts=S.accounts||{}; S.accounts[ex]=a; persist();
     const fresh = S.sample || !S.trades.length;
     if(fresh && setCapitalFromExchange()){ if(S.sample){ S.trades=[]; S.sample=false; persist(); } }
@@ -1295,20 +1085,6 @@ document.addEventListener("click",e=>{
   else if(act==="backup") shareOrShow("Back up", JSON.stringify({app:"risk-ledger",v:1,settings:S.settings,trades:S.trades.map(({_R,_pnl,...t})=>t)}), "Keep this text somewhere safe");
   else if(act==="restore") restoreSheet();
   else if(act==="updRate") doUpdateRate();
-  else if(act==="goAp"){ ui.tab="settings"; render(); setTimeout(()=>{ const el=$("ap-settings"); if(el) el.scrollIntoView({behavior:"smooth"}); },50); }
-  else if(act==="apConnect") connectSheet(tradeSlot(), true);
-  else if(act==="apCheck"){ const box=$("ap-check"); box.hidden=false; box.textContent="Checking…";
-    fut("check").then(r=>{ box.innerHTML = r.ok ? `${r.canTrade?"✓ Trading allowed":"✗ Trading is off: tick Enable Futures on the key"} · wallet ${money(r.wallet)} USDT · available ${money(r.available)} · ${r.dual?"hedge mode":"one-way mode"}` : `✗ ${esc(r.error||"Key rejected")}`; })
-      .catch(e=>{ box.textContent=String(e.message||e); }); }
-  else if(act==="apBattery"){ try{ Native.askBattery(); }catch(e){} }
-  else if(act==="placeReview") placeReview();
-  else if(act==="placeGo") placeGo();
-  else if(act==="placeBack"){ const p=ui.sheet.prev; newTradeSheet(p); }
-  else if(act==="apAskClose"){ $("ap-close-zone").innerHTML=`<div class="warnbox">Close the whole position at market now? This overrides your plan.</div><div class="confirm"><button class="btn ghost" type="button" data-act="apKeep">Keep the plan</button><button class="btn danger" type="button" data-act="apDoClose">Close now</button></div>`; }
-  else if(act==="apKeep"){ $("ap-close-zone").innerHTML=`<button class="btn danger" data-act="apAskClose">Close now at market</button>`; }
-  else if(act==="apDoClose") apDoClose();
-  else if(act==="apCancelEntry"){ const t=S.trades.find(x=>x.id===ui.sheet.id); const [sym,side]=t.posKey.split("|").slice(1);
-    fut("cancelEntry",{symbol:sym, side, orderId:t.orderId}).then(r=>{ if(r.ok){ S.trades=S.trades.filter(x=>x.id!==t.id); persist(); closeSheet(); toast("Entry order cancelled"); } else toast(r.error||"Couldn't cancel"); }).catch(e=>toast(String(e.message||e))); }
   else if(act==="refreshUsdt") refreshUsdt();
   else if(act==="capFromEx"){ toast("Getting your futures balance…"); syncAccounts().then(()=>{ if(setCapitalFromExchange()){ render(); toast(`Starting capital set to ${money(S.settings.capital)} ${S.settings.currency}`); } else toast("Your futures balance is 0. Transfer funds to futures or type the capital yourself."); }); }
   else if(act==="connect") connectSheet(a.dataset.ex);
@@ -1332,8 +1108,6 @@ async function doUpdateRate(){
 }
 
 S=load(); if(!loadRaw()) persist();
-syncPlan();
-if(Native && Native.apStart && S.settings.ap.bg) try{ Native.apStart(); }catch(e){}
 applyTheme();
 render();
 // keep the second-currency rate fresh (every 6 hours) when the app opens
@@ -1355,17 +1129,10 @@ function paintLive(){
   const tl=$("t-live"); if(tl && ui.sheet && ui.sheet.kind==="trade"){ const t=S.trades.find(x=>x.id===ui.sheet.id); const lv=t&&live[liveKey(t)];
     if(lv){ const r=openR(t,lv.p); tl.querySelector(".v").innerHTML=`${price(lv.p)} · <span class="${cls(r)}">${R(r)} (${smoney(r*t.riskUsd)})</span><br><span style="font-size:11.5px;color:var(--ink-3);font-family:var(--f-ui)"><span class="livedot"></span>${new Date(lv.at).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit",second:"2-digit"})}</span>`; } }
 }
-let ticking=false, apLast=0;
+let ticking=false;
 async function tick(){
   if(ticking || !Native || document.hidden) return; ticking=true;
   try{
-    pullEvents();
-    // While the app is open the autopilot runs from here too (the background service covers the rest).
-    if(Native.apRunNow && keyInfo(tradeSlot()) && Date.now()-apLast>5000){ apLast=Date.now();
-      const stt=apStatus(); const busy = Object.keys(stt.overrides||{}).length || Object.values(stt.state||{}).some(v=>v&&v.managed) || S.settings.ap.manageManual;
-      if(!stt.running && busy) await apRunNow();
-      pullEvents();
-      if(ui.tab==="dash" && $("sheet").hidden){ const el=$("ap-dash"); if(el) el.outerHTML=apCard(); } }
     const sheetOpen=!$("sheet").hidden;
     if(!sheetOpen && ui.tab==="markets") await loadMarkets(false);
     else if(!sheetOpen && ui.tab==="trades"){ await Promise.all([refreshLive(S.trades), refreshPositions()]); paintLive(); }

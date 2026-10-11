@@ -3,11 +3,7 @@ package com.riskledger.app;
 import android.app.Activity;
 import android.content.Intent;
 import android.net.Uri;
-import android.content.pm.PackageManager;
-import android.os.Build;
 import android.os.Bundle;
-import android.os.PowerManager;
-import android.provider.Settings;
 import android.view.View;
 import android.view.Window;
 import android.webkit.JavascriptInterface;
@@ -15,23 +11,38 @@ import android.webkit.WebResourceRequest;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
+import java.io.InputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import android.security.keystore.KeyGenParameterSpec;
+import android.security.keystore.KeyProperties;
+import android.util.Base64;
+import java.security.KeyStore;
+import javax.crypto.Cipher;
+import javax.crypto.KeyGenerator;
+import javax.crypto.Mac;
+import javax.crypto.SecretKey;
+import javax.crypto.spec.GCMParameterSpec;
+import javax.crypto.spec.SecretKeySpec;
 import java.util.HashMap;
 import java.util.Map;
 import org.json.JSONObject;
 
 public class MainActivity extends Activity {
     private WebView web;
+    private static String userAgent = "Mozilla/5.0 (Linux; Android) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Mobile Safari/537.36";
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         web = new WebView(this);
         WebSettings s = web.getSettings();
-        try { Net.userAgent = WebSettings.getDefaultUserAgent(this); } catch (Exception ignored) { }
+        try { userAgent = WebSettings.getDefaultUserAgent(this); } catch (Exception ignored) { }
         s.setJavaScriptEnabled(true);
         s.setDomStorageEnabled(true);
         s.setAllowFileAccess(false);
@@ -76,17 +87,106 @@ public class MainActivity extends Activity {
         d.setSystemUiVisibility(dark ? (f & ~light) : (f | light));
     }
 
-    private void reply(String id, Net.Res r) {
-        final String js = "window.__httpCb(" + JSONObject.quote(id) + "," + r.ok + "," + JSONObject.quote(r.body == null ? "" : r.body) + ")";
+    private static String readAll(InputStream in) throws Exception {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        byte[] buf = new byte[8192];
+        int n;
+        while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+        return out.toString("UTF-8");
+    }
+
+    /** Result of an HTTP call: ok flag plus body (or error text). */
+    static final class Res { boolean ok; String body; }
+
+    private static Res request(String method, String url, Map<String, String> headers, String body) {
+        Res r = new Res();
+        HttpURLConnection c = null;
+        try {
+            if (!url.startsWith("https://")) throw new Exception("Only https is allowed");
+            c = (HttpURLConnection) new URL(url).openConnection();
+            c.setRequestMethod(method);
+            c.setConnectTimeout(15000);
+            c.setReadTimeout(15000);
+            // Some exchanges turn away requests that don't look like a phone browser.
+            c.setRequestProperty("User-Agent", userAgent);
+            c.setRequestProperty("Accept", "application/json");
+            if (headers != null) for (Map.Entry<String, String> h : headers.entrySet()) c.setRequestProperty(h.getKey(), h.getValue());
+            if (body != null) {
+                c.setDoOutput(true);
+                c.setRequestProperty("Content-Type", "application/json");
+                c.getOutputStream().write(body.getBytes(StandardCharsets.UTF_8));
+            }
+            int code = c.getResponseCode();
+            InputStream in = code >= 400 ? c.getErrorStream() : c.getInputStream();
+            String text = in == null ? "" : readAll(in);
+            r.ok = code < 400;
+            r.body = r.ok ? text : ("HTTP " + code + " " + text);
+        } catch (Exception e) {
+            r.ok = false;
+            r.body = String.valueOf(e.getMessage());
+        } finally {
+            if (c != null) c.disconnect();
+        }
+        return r;
+    }
+
+    private void reply(String id, Res r) {
+        final String js = "window.__httpCb(" + JSONObject.quote(id) + "," + r.ok + "," + JSONObject.quote(r.body) + ")";
         runOnUiThread(() -> web.evaluateJavascript(js, null));
     }
 
-    private void replyJson(String id, boolean ok, String body) {
-        Net.Res r = new Net.Res(); r.ok = ok; r.body = body; reply(id, r);
+    private static String hmacHex(String secret, String msg) throws Exception {
+        Mac mac = Mac.getInstance("HmacSHA256");
+        mac.init(new SecretKeySpec(secret.getBytes(StandardCharsets.UTF_8), "HmacSHA256"));
+        byte[] h = mac.doFinal(msg.getBytes(StandardCharsets.UTF_8));
+        StringBuilder sb = new StringBuilder();
+        for (byte b : h) sb.append(String.format("%02x", b));
+        return sb.toString();
+    }
+
+    // API keys are encrypted with a key that never leaves the phone's Android Keystore,
+    // stored outside Android backups, and never handed back to the page.
+    private SecretKey vaultKey() throws Exception {
+        KeyStore ks = KeyStore.getInstance("AndroidKeyStore");
+        ks.load(null);
+        if (!ks.containsAlias("rl_api")) {
+            KeyGenerator kg = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore");
+            kg.init(new KeyGenParameterSpec.Builder("rl_api", KeyProperties.PURPOSE_ENCRYPT | KeyProperties.PURPOSE_DECRYPT)
+                    .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
+                    .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+                    .build());
+            kg.generateKey();
+        }
+        return ((KeyStore.SecretKeyEntry) ks.getEntry("rl_api", null)).getSecretKey();
+    }
+
+    private File keyFile(String ex) { return new File(getNoBackupFilesDir(), "api_" + ex.replaceAll("[^a-z]", "") + ".bin"); }
+
+    private void writeKeys(String ex, String key, String secret) throws Exception {
+        JSONObject o = new JSONObject();
+        o.put("k", key);
+        o.put("s", secret);
+        Cipher c = Cipher.getInstance("AES/GCM/NoPadding");
+        c.init(Cipher.ENCRYPT_MODE, vaultKey());
+        byte[] ct = c.doFinal(o.toString().getBytes(StandardCharsets.UTF_8));
+        String out = Base64.encodeToString(c.getIV(), Base64.NO_WRAP) + ":" + Base64.encodeToString(ct, Base64.NO_WRAP);
+        try (FileOutputStream f = new FileOutputStream(keyFile(ex))) { f.write(out.getBytes(StandardCharsets.UTF_8)); }
+    }
+
+    private String[] readKeys(String ex) {
+        File f = keyFile(ex);
+        if (!f.exists()) return null;
+        try (FileInputStream in = new FileInputStream(f)) {
+            String[] parts = readAll(in).split(":");
+            Cipher c = Cipher.getInstance("AES/GCM/NoPadding");
+            c.init(Cipher.DECRYPT_MODE, vaultKey(), new GCMParameterSpec(128, Base64.decode(parts[0], Base64.NO_WRAP)));
+            JSONObject o = new JSONObject(new String(c.doFinal(Base64.decode(parts[1], Base64.NO_WRAP)), StandardCharsets.UTF_8));
+            return new String[]{o.getString("k"), o.getString("s")};
+        } catch (Exception e) { return null; }
     }
 
     private static long serverTime(String url, String field) {
-        Net.Res r = Net.request("GET", url, null, null);
+        Res r = request("GET", url, null, null);
         try {
             if (r.ok) {
                 JSONObject o = new JSONObject(r.body);
@@ -97,9 +197,9 @@ public class MainActivity extends Activity {
     }
 
     /** Only these fixed read-only endpoints can be signed; the page cannot ask for anything else. */
-    private Net.Res signedGet(String ex, String kind) {
-        Net.Res r = new Net.Res();
-        String[] k = Vault.read(this, ex);
+    private Res signedGet(String ex, String kind) {
+        Res r = new Res();
+        String[] k = readKeys(ex);
         if (k == null) { r.body = "No API key saved for this exchange."; return r; }
         try {
             Map<String, String> h = new HashMap<>();
@@ -118,7 +218,7 @@ public class MainActivity extends Activity {
                 long ts = serverTime(base + (fut ? "/fapi/v1/time" : "/api/v3/time"), "serverTime");
                 String q = "recvWindow=10000&timestamp=" + ts;
                 h.put(ex.equals("mexc") ? "X-MEXC-APIKEY" : "X-MBX-APIKEY", k[0]);
-                return Net.request("GET", base + path + "?" + q + "&signature=" + Net.hmacHex(k[1], q), h, null);
+                return request("GET", base + path + "?" + q + "&signature=" + hmacHex(k[1], q), h, null);
             } else if (ex.equals("mexc")) {
                 String path, params = "";
                 if (kind.equals("futAssets")) path = "/api/v1/private/account/assets";
@@ -128,12 +228,12 @@ public class MainActivity extends Activity {
                 String ts = String.valueOf(serverTime("https://contract.mexc.com/api/v1/contract/ping", null));
                 h.put("ApiKey", k[0]);
                 h.put("Request-Time", ts);
-                h.put("Signature", Net.hmacHex(k[1], k[0] + ts + params));
+                h.put("Signature", hmacHex(k[1], k[0] + ts + params));
                 h.put("Content-Type", "application/json");
                 String q = params.isEmpty() ? "" : "?" + params;
-                Net.Res first = Net.request("GET", "https://contract.mexc.com" + path + q, h, null);
+                Res first = request("GET", "https://contract.mexc.com" + path + q, h, null);
                 // If the main futures address is blocked on this network, MEXC's website address serves the same API.
-                if (!first.ok && (first.body == null || !first.body.contains("{"))) return Net.request("GET", "https://futures.mexc.com" + path + q, h, null);
+                if (!first.ok && (first.body == null || !first.body.contains("{"))) return request("GET", "https://futures.mexc.com" + path + q, h, null);
                 return first;
             }
             r.body = "This exchange can't be connected yet.";
@@ -150,7 +250,7 @@ public class MainActivity extends Activity {
             File f = file();
             if (!f.exists()) return null;
             try (FileInputStream in = new FileInputStream(f)) {
-                return Net.readAll(in);
+                return readAll(in);
             } catch (Exception e) { return null; }
         }
 
@@ -178,15 +278,15 @@ public class MainActivity extends Activity {
         /** Read-only HTTPS GET for public prices and exchange rates; answers via window.__httpCb. */
         @JavascriptInterface
         public void httpGet(final String id, final String url) {
-            new Thread(() -> reply(id, Net.request("GET", url, null, null))).start();
+            new Thread(() -> reply(id, request("GET", url, null, null))).start();
         }
 
         /** HTTPS POST with a JSON body, used for the public Binance P2P price search. */
         @JavascriptInterface
         public void httpPost(final String id, final String url, final String json) {
             new Thread(() -> {
-                if (!url.startsWith("https://p2p.binance.com/")) { Net.Res r = new Net.Res(); r.body = "blocked"; reply(id, r); return; }
-                reply(id, Net.request("POST", url, null, json));
+                if (!url.startsWith("https://p2p.binance.com/")) { Res r = new Res(); r.body = "blocked"; reply(id, r); return; }
+                reply(id, request("POST", url, null, json));
             }).start();
         }
 
@@ -194,7 +294,7 @@ public class MainActivity extends Activity {
         public String saveKeys(String ex, String key, String secret) {
             try {
                 if (key == null || secret == null || key.trim().isEmpty() || secret.trim().isEmpty()) return "Enter both the API key and the secret.";
-                Vault.write(MainActivity.this, ex, key.trim(), secret.trim());
+                writeKeys(ex, key.trim(), secret.trim());
                 return "";
             } catch (Exception e) { return "Couldn't save the key: " + e.getMessage(); }
         }
@@ -202,83 +302,18 @@ public class MainActivity extends Activity {
         /** Masked key for display, or "" when not connected. */
         @JavascriptInterface
         public String keyInfo(String ex) {
-            String[] k = Vault.read(MainActivity.this, ex);
+            String[] k = readKeys(ex);
             if (k == null) return "";
             String a = k[0];
             return a.length() <= 8 ? "••••" : a.substring(0, 4) + "…" + a.substring(a.length() - 4);
         }
 
         @JavascriptInterface
-        public void removeKeys(String ex) { Vault.remove(MainActivity.this, ex); }
+        public void removeKeys(String ex) { keyFile(ex).delete(); }
 
         @JavascriptInterface
         public void privateGet(final String id, final String ex, final String kind) {
             new Thread(() -> reply(id, signedGet(ex, kind))).start();
-        }
-
-        // ---------- autopilot ----------
-
-        @JavascriptInterface
-        public void apSetPlan(String json) { Autopilot.setPlan(MainActivity.this, json); }
-
-        @JavascriptInterface
-        public void apStart() { AutopilotService.start(MainActivity.this); }
-
-        @JavascriptInterface
-        public void apStop() { AutopilotService.stop(MainActivity.this); }
-
-        @JavascriptInterface
-        public String apStatus() { return Autopilot.statusJson(MainActivity.this); }
-
-        @JavascriptInterface
-        public String apEvents() { return Autopilot.takeEvents(MainActivity.this); }
-
-        /** One watcher pass right now (used every few seconds while the app is open). */
-        @JavascriptInterface
-        public void apRunNow(final String id) {
-            new Thread(() -> replyJson(id, true, Autopilot.runOnce(MainActivity.this))).start();
-        }
-
-        /** Trading actions on Binance futures: check | open | close | cancelEntry. */
-        @JavascriptInterface
-        public void futAction(final String id, final String action, final boolean test, final String json) {
-            new Thread(() -> {
-                try {
-                    JSONObject j = new JSONObject(json == null || json.isEmpty() ? "{}" : json);
-                    JSONObject out;
-                    if (action.equals("check")) out = Futures.check(MainActivity.this, test);
-                    else if (action.equals("open")) out = Futures.open(MainActivity.this, test, j);
-                    else if (action.equals("close")) out = Futures.close(MainActivity.this, test, j);
-                    else if (action.equals("cancelEntry")) out = Futures.cancelEntry(MainActivity.this, test, j);
-                    else { replyJson(id, false, "Unknown action"); return; }
-                    replyJson(id, true, out.toString());
-                } catch (Exception e) { replyJson(id, false, String.valueOf(e.getMessage())); }
-            }).start();
-        }
-
-        @JavascriptInterface
-        public void askNotifications() {
-            if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission("android.permission.POST_NOTIFICATIONS") != PackageManager.PERMISSION_GRANTED)
-                runOnUiThread(() -> requestPermissions(new String[]{"android.permission.POST_NOTIFICATIONS"}, 7));
-        }
-
-        @JavascriptInterface
-        public boolean batteryFree() {
-            PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
-            return pm.isIgnoringBatteryOptimizations(getPackageName());
-        }
-
-        /** Ask Android to let the autopilot keep running with the screen off. */
-        @JavascriptInterface
-        public void askBattery() {
-            runOnUiThread(() -> {
-                try {
-                    Intent i = new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:" + getPackageName()));
-                    startActivity(i);
-                } catch (Exception e) {
-                    try { startActivity(new Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)); } catch (Exception ignored) { }
-                }
-            });
         }
 
         @JavascriptInterface
