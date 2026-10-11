@@ -201,10 +201,12 @@ public class MainActivity extends Activity {
         try {
             Map<String, String> h = new HashMap<>();
             if (ex.equals("binance") || (ex.equals("mexc") && kind.equals("spot"))) {
-                boolean fut = !kind.equals("spot");
+                if (ex.equals("mexc") && !kind.equals("spot")) { r.body = "Unknown request"; return r; }
+                boolean fut = kind.equals("futAccount") || kind.equals("positions");
                 String base = ex.equals("mexc") ? "https://api.mexc.com" : (fut ? "https://fapi.binance.com" : "https://api.binance.com");
                 String path;
                 if (kind.equals("spot")) path = "/api/v3/account";
+                else if (kind.equals("wallets") && ex.equals("binance")) path = "/sapi/v1/asset/wallet/balance";
                 else if (kind.equals("futAccount")) path = "/fapi/v2/account";
                 else if (kind.equals("positions")) path = "/fapi/v2/positionRisk";
                 else { r.body = "Unknown request"; return r; }

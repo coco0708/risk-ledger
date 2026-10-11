@@ -292,18 +292,37 @@ function apiErr(e){ const m=String(e&&e.message||e);
   const msg = j && (j.msg || j.message) || m;
   if(/-2015|-2014|invalid api|api-key|signature|401|403|602|10072/i.test(m)) return "The exchange rejected the key. Check the key and secret, and that the key has read permission.";
   return msg.length>140 ? msg.slice(0,140)+"…" : msg; }
+// Total value of every coin in every wallet, in USDT, like the exchange's own "estimated balance".
+const STABLE = new Set(["USDT","USDC","FDUSD","BUSD","TUSD","DAI","USDE","USD1"]);
+async function usdtPrices(ex){ const m={}; try{ (await allPairs(ex,"spot")).forEach(r=>{ if(r.q==="USDT") m[r.b]=r.p; }); }catch(e){} return m; }
+const valueOf = (asset, qty, px) => STABLE.has(asset) ? qty : (px[asset] ? qty*px[asset] : 0);
 async function fetchAccount(ex){
-  const out={ex, spot:null, futEq:null, futAvail:null, positions:[], at:Date.now(), errors:[]};
-  const tryPart = async (label, fn) => { try{ await fn(); }catch(e){ out.errors.push(label+": "+apiErr(e)); } };
+  const out={ex, total:0, wallets:[], spot:null, futEq:null, positions:[], at:Date.now(), errors:[], unpriced:[]};
+  const tryPart = async (label, fn) => { try{ await fn(); return true; }catch(e){ out.errors.push(label+": "+apiErr(e)); return false; } };
+  const px = await usdtPrices(ex);
   if(ex==="binance"){
-    await tryPart("Spot", async()=>{ const j=JSON.parse(await privateGet(ex,"spot")); const u=(j.balances||[]).find(b=>b.asset==="USDT"); out.spot=u? num(u.free)+num(u.locked) : 0; });
-    await tryPart("Futures", async()=>{ const j=JSON.parse(await privateGet(ex,"futAccount")); out.futEq=num(j.totalMarginBalance); out.futAvail=num(j.availableBalance); });
+    // All wallets at once: Spot, Funding, Futures, Earn, Margin, Bots… (reported in BTC)
+    const okW = await tryPart("Wallets", async()=>{ const j=JSON.parse(await privateGet(ex,"wallets"));
+      const btc = px.BTC || await livePrice("binance","spot","BTCUSDT");
+      out.wallets=(Array.isArray(j)?j:[]).map(w=>({name:String(w.walletName||"").replace(/USDⓈ-M/,"USDT-M"), usdt:num(w.balance)*btc})).filter(w=>w.usdt>=0.01);
+      out.total=out.wallets.reduce((s,w)=>s+w.usdt,0);
+      const sp=out.wallets.find(w=>/^spot$/i.test(w.name)); out.spot=sp?sp.usdt:0;
+      const fu=out.wallets.find(w=>/USDT-M/i.test(w.name)); out.futEq=fu?fu.usdt:0; });
+    if(!okW){ // fallback: spot coins + USDT-M futures
+      await tryPart("Spot", async()=>{ const j=JSON.parse(await privateGet(ex,"spot")); out.spot=(j.balances||[]).reduce((s,b)=>s+valueOf(b.asset, num(b.free)+num(b.locked), px),0); });
+      await tryPart("Futures", async()=>{ const j=JSON.parse(await privateGet(ex,"futAccount")); out.futEq=num(j.totalMarginBalance); });
+      out.wallets=[{name:"Spot",usdt:out.spot||0},{name:"USDT-M Futures",usdt:out.futEq||0}].filter(w=>w.usdt>=0.01);
+      out.total=(out.spot||0)+(out.futEq||0);
+    }
     await tryPart("Positions", async()=>{ const j=JSON.parse(await privateGet(ex,"positions"));
       out.positions=(Array.isArray(j)?j:[]).filter(x=>num(x.positionAmt)!==0).map(x=>({pair:pairLabel(x.symbol), dir:num(x.positionAmt)>0?"Long":"Short", size:Math.abs(num(x.positionAmt)), entry:num(x.entryPrice), mark:num(x.markPrice), upnl:num(x.unRealizedProfit), lev:num(x.leverage)})); });
   } else if(ex==="mexc"){
-    await tryPart("Spot", async()=>{ const j=JSON.parse(await privateGet(ex,"spot")); const u=(j.balances||[]).find(b=>b.asset==="USDT"); out.spot=u? num(u.free)+num(u.locked) : 0; });
+    await tryPart("Spot", async()=>{ const j=JSON.parse(await privateGet(ex,"spot"));
+      out.spot=(j.balances||[]).reduce((s,b)=>{ const q=num(b.free)+num(b.locked); if(q>0 && !STABLE.has(b.asset) && !px[b.asset]) out.unpriced.push(b.asset); return s+valueOf(b.asset,q,px); },0); });
     await tryPart("Futures", async()=>{ const j=JSON.parse(await privateGet(ex,"futAssets")); if(j.success===false) throw new Error(j.message||("code "+j.code));
-      const u=(j.data||[]).find(a=>a.currency==="USDT"); out.futEq=u? num(u.equity) : 0; out.futAvail=u? num(u.availableBalance) : 0; });
+      out.futEq=(j.data||[]).reduce((s,a)=>s+valueOf(a.currency, num(a.equity), px),0); });
+    out.wallets=[{name:"Spot",usdt:out.spot||0},{name:"Futures",usdt:out.futEq||0}].filter(w=>w.usdt>=0.01);
+    out.total=(out.spot||0)+(out.futEq||0);
     await tryPart("Positions", async()=>{ const j=JSON.parse(await privateGet(ex,"positions")); if(j.success===false) throw new Error(j.message||("code "+j.code));
       const list=j.data||[]; let prices={}; try{ (await allPairs("mexc","futures")).forEach(r=>prices[r.pair]=r.p); }catch(e){}
       out.positions=await Promise.all(list.map(async x=>{ const pair=pairLabel(x.symbol), dir=x.positionType===2?"Short":"Long", entry=num(x.holdAvgPrice||x.openAvgPrice), vol=num(x.holdVol);
@@ -311,11 +330,11 @@ async function fetchAccount(ex){
         const mark=prices[pair]||0; const upnl = mark? (mark-entry)*vol*cs*(dir==="Long"?1:-1) : null;
         return {pair, dir, size:vol*cs, entry, mark, upnl, lev:num(x.leverage)}; })); });
   }
-  if(out.errors.length===3) throw new Error(out.errors[0].replace(/^\w+: /,""));
+  if(out.spot==null && out.futEq==null && !out.wallets.length) throw new Error(out.errors[0] ? out.errors[0].replace(/^\w+: /,"") : "No balance returned.");
   return out;
 }
 const accounts = () => (typeof S!=="undefined" && S && S.accounts) || {};
-const acctTotal = a => (a.spot||0) + (a.futEq||0);
+const acctTotal = a => a.total!=null ? a.total : (a.spot||0) + (a.futEq||0);
 function exTotal(){ const a=accounts(); const list=ACCT_EX.filter(k=>a[k] && keyInfo(k)); return list.length ? list.reduce((s,k)=>s+acctTotal(a[k]),0) : null; }
 async function syncAccounts(){
   S.accounts = S.accounts || {}; const res=[];
@@ -548,9 +567,9 @@ function exAcctCard(){
   return `<section class="card next">
     <div class="sechead"><div class="label">Exchange balance</div><button class="linkbtn" data-act="syncAcct">Refresh</button></div>
     <div class="big"><span class="num">${money(tot)}</span><span style="color:var(--ink-2)">${esc(S.settings.currency)}${hasSec()?" · "+secTxt(tot):""}</span></div>
-    <div>${list.map(k=>`<div class="kv"><span class="k">${EX[k].name}</span><span class="v num">${money(acctTotal(a[k]))}<br><span style="font-size:12px;color:var(--ink-3)">spot ${money(a[k].spot||0)} · futures ${money(a[k].futEq||0)}</span></span></div>`).join("")}
+    <div>${list.map(k=>`<div class="kv"><span class="k">${EX[k].name}</span><span class="v num">${money(acctTotal(a[k]))}<br><span style="font-size:12px;color:var(--ink-3)">${(a[k].wallets&&a[k].wallets.length? a[k].wallets : [{name:"Spot",usdt:a[k].spot||0},{name:"Futures",usdt:a[k].futEq||0}]).map(w=>`${esc(w.name)} ${money(w.usdt)}`).join(" · ")}</span></span></div>`).join("")}
     <div class="kv"><span class="k">Open positions</span><span class="v num">${pos}</span></div></div>
-    <span class="hint" style="font-size:12.5px;color:var(--ink-3)">USDT only · updated ${new Date(at).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"})}</span>
+    <span class="hint" style="font-size:12.5px;color:var(--ink-3)">All coins in all wallets, valued in USDT · updated ${new Date(at).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"})}</span>
   </section>`;
 }
 
