@@ -343,7 +343,15 @@ async function fetchAccount(ex){
       out.total=(out.spot||0)+(out.futEq||0);
     }
     await tryPart("Positions", async()=>{ const j=JSON.parse(await privateGet(ex,"positions"));
-      out.positions=(Array.isArray(j)?j:[]).filter(x=>num(x.positionAmt)!==0).map(x=>({pair:pairLabel(x.symbol), dir:num(x.positionAmt)>0?"Long":"Short", size:Math.abs(num(x.positionAmt)), entry:num(x.entryPrice), mark:num(x.markPrice), upnl:num(x.unRealizedProfit), lev:num(x.leverage)})); });
+      out.positions=(Array.isArray(j)?j:[]).filter(x=>num(x.positionAmt)!==0).map(x=>{ const amt=num(x.positionAmt), lev=num(x.leverage), notional=Math.abs(num(x.notional))||Math.abs(amt)*num(x.markPrice);
+        return {key:"binance|"+x.symbol+"|"+(amt>0?"L":"S"), sym:x.symbol, posSide:x.positionSide, pair:pairLabel(x.symbol), dir:amt>0?"Long":"Short", size:Math.abs(amt), entry:num(x.entryPrice), mark:num(x.markPrice), upnl:num(x.unRealizedProfit), lev,
+          liq:num(x.liquidationPrice)||null, margin:(x.marginType==="isolated"&&num(x.isolatedMargin))? num(x.isolatedMargin) : (lev? notional/lev : null), marginType:x.marginType||"", sl:null, tps:[]}; }); });
+    if(out.positions.length){ const orders=[];
+      await tryPart("Orders", async()=>{ const j=JSON.parse(await privateGet(ex,"openOrders"));
+        (Array.isArray(j)?j:[]).forEach(o=>orders.push({sym:o.symbol, type:String(o.type||o.origType||""), price:num(o.stopPrice)||num(o.price), side:o.side, posSide:o.positionSide, reduce:o.reduceOnly||o.closePosition})); });
+      await tryPart("Algo orders", async()=>{ const raw=JSON.parse(await privateGet(ex,"algoOrders")); const arr=Array.isArray(raw)?raw:(raw.orders||raw.data||[]);
+        arr.forEach(o=>orders.push({sym:o.symbol, type:String(o.orderType||o.type||""), price:num(o.triggerPrice)||num(o.stopPrice)||num(o.price), side:o.side, posSide:o.positionSide, reduce:true})); });
+      attachOrders(out.positions, orders); }
   } else if(ex==="mexc"){
     await tryPart("Spot", async()=>{ const j=JSON.parse(await privateGet(ex,"spot"));
       out.spot=(j.balances||[]).reduce((s,b)=>{ const q=num(b.free)+num(b.locked); if(q>0 && !STABLE.has(b.asset) && !px[b.asset]) out.unpriced.push(b.asset); return s+valueOf(b.asset,q,px); },0); });
@@ -357,10 +365,32 @@ async function fetchAccount(ex){
       out.positions=await Promise.all(list.map(async x=>{ const pair=pairLabel(x.symbol), dir=x.positionType===2?"Short":"Long", entry=num(x.holdAvgPrice||x.openAvgPrice), vol=num(x.holdVol);
         let cs=1; try{ const d=JSON.parse(await httpGet("https://contract.mexc.com/api/v1/contract/detail?symbol="+x.symbol)); cs=num(d.data&&d.data.contractSize)||1; }catch(e){}
         const mark=prices[pair]||0; const upnl = mark? (mark-entry)*vol*cs*(dir==="Long"?1:-1) : null;
-        return {pair, dir, size:vol*cs, entry, mark, upnl, lev:num(x.leverage)}; })); });
+        return {key:"mexc|"+x.positionId, posId:x.positionId, sym:x.symbol, pair, dir, size:vol*cs, entry, mark, upnl, lev:num(x.leverage),
+          liq:num(x.liquidatePrice)||null, margin:num(x.im)||num(x.oim)||null, marginType:x.openType===1?"isolated":"cross", sl:null, tps:[]}; })); });
+    if(out.positions.length) await tryPart("Orders", async()=>{ const j=JSON.parse(await privateGet(ex,"stopOrders")); if(j.success===false) throw new Error(j.message||("code "+j.code));
+      const arr=Array.isArray(j.data)? j.data : ((j.data&&(j.data.resultList||j.data.list))||[]);
+      arr.forEach(o=>{ const p=out.positions.find(p=>String(p.posId)===String(o.positionId)) || out.positions.find(p=>p.sym===o.symbol); if(!p) return;
+        const slp=num(o.stopLossPrice), tpp=num(o.takeProfitPrice);
+        if(slp>0) p.sl = p.sl==null? slp : (p.dir==="Long"? Math.max(p.sl,slp) : Math.min(p.sl,slp));
+        if(tpp>0 && !p.tps.includes(tpp)) p.tps.push(tpp); });
+      out.positions.forEach(p=>p.tps.sort((a,b)=>p.dir==="Long"? a-b : b-a)); });
   }
   if(out.spot==null && out.futEq==null && !out.wallets.length) throw new Error(out.errors[0] ? out.errors[0].replace(/^\w+: /,"") : "No balance returned.");
   return out;
+}
+// Match open stop / take-profit orders to each position (closing side, same symbol).
+function attachOrders(positions, orders){
+  positions.forEach(p=>{
+    const close = p.dir==="Long" ? "SELL" : "BUY";
+    const mine = orders.filter(o=>o.sym===p.sym && o.price>0 && (!o.side || o.side===close) && (!o.posSide || o.posSide==="BOTH" || o.posSide===(p.dir==="Long"?"LONG":"SHORT")));
+    const stops=[], tps=[];
+    mine.forEach(o=>{ const t=o.type.toUpperCase();
+      if(t.includes("TAKE_PROFIT")) tps.push(o.price);
+      else if(t.includes("STOP") || t.includes("TRAILING")) stops.push(o.price);
+      else if(o.reduce && (p.dir==="Long"? o.price>p.entry : o.price<p.entry)) tps.push(o.price); });
+    if(stops.length) p.sl = p.dir==="Long" ? Math.max(...stops) : Math.min(...stops);
+    p.tps=[...new Set(tps)].sort((a,b)=>p.dir==="Long"? a-b : b-a);
+  });
 }
 const accounts = () => (typeof S!=="undefined" && S && S.accounts) || {};
 const futuresOnly = () => !(typeof S!=="undefined" && S && S.settings.balScope==="all");
@@ -670,7 +700,8 @@ function viewTrades(c){
   const posHtml = posList.length ? `<div class="label" style="margin-top:4px">Open on your exchanges</div><div class="list">${posList.map((p,i)=>`<button class="trow" data-pos="${i}">
       <span class="pair"><span class="dir ${p.dir==="Short"?"S":"L"}">${p.dir==="Short"?"SHORT":"LONG"}</span>${esc(p.pair)}<span class="exn">${EX[p.ex].name}</span></span>
       <span class="r num ${p.upnl==null?"":cls(p.upnl)}" data-pu="${i}">${p.upnl==null?"—":smoney(p.upnl)}</span>
-      <span class="sub num">@ ${price(p.entry)}${p.lev?` · ${p.lev}x`:""}</span><span class="sub rt">Tap to log</span></button>`).join("")}</div><div class="label" style="margin-top:4px">Your log</div>` : "";
+      <span class="sub num">@ ${price(p.entry)}${p.lev?` · ${p.lev}x`:""}${p.sl?` · SL ${price(p.sl)}`:" · no SL"}</span><span class="sub rt">${S.trades.some(t=>!t.outcome&&t.posKey&&t.posKey===p.key)?"Logged ✓":"Tap to log"}</span>
+      <span class="sub num" style="grid-column:1/-1">${p.liq?`Liq ${price(p.liq)}`:""}${p.margin?` · margin ${money(p.margin)}${p.marginType?` (${esc(p.marginType)})`:""}`:""}${p.tps&&p.tps.length?` · TP ${p.tps.map(price).join(" / ")}`:""}</span></button>`).join("")}</div><div class="label" style="margin-top:4px">Your log</div>` : "";
   ui.posList = posList;
   return `${header()}${sampleBanner()}${posHtml}<div class="seg" role="group" aria-label="Filter trades">${seg}</div>
     ${list.length? `<div class="list">${rows}</div>` : `<div class="card empty"><div>No trades here yet.</div><div style="font-size:13.5px">Tap <b>+ New trade</b>, enter entry and stop loss, and the app sizes the position for you.</div></div>`}`;
@@ -846,7 +877,7 @@ function newTradeSheet(pre){
   pre = pre && pre.pair ? pre : {};
   const c=compute(S.settings,S.trades);
   const st0=S.settings;
-  ui.sheet={kind:"new", dir:pre.dir||"Long", ex:pre.ex||(EX[st0.exchange]?st0.exchange:"mexc"), market:pre.market||(st0.market==="spot"?"spot":"futures")};
+  ui.sheet={kind:"new", posKey:pre.posKey||null, dir:pre.dir||"Long", ex:pre.ex||(EX[st0.exchange]?st0.exchange:"mexc"), market:pre.market||(st0.market==="spot"?"spot":"futures")};
   openSheet(`<header><h2>New trade</h2><button class="x" data-act="close" aria-label="Close">×</button></header>
   <form id="ntf" class="form" novalidate>
     <div class="two">
@@ -860,16 +891,17 @@ function newTradeSheet(pre){
     <div class="field"><label>Direction</label><div class="seg" id="n-dir"><button type="button" data-dir="Long" aria-pressed="${ui.sheet.dir!=="Short"}">Long</button><button type="button" data-dir="Short" aria-pressed="${ui.sheet.dir==="Short"}">Short</button></div></div>
     <div class="two">
       <div class="field" id="f-entry"><div class="lblrow"><label for="n-entry">Entry price</label><button type="button" class="linkbtn" id="n-live">Live</button></div><input id="n-entry" class="num" inputmode="decimal" placeholder="0.00" value="${pre.entry||""}"></div>
-      <div class="field" id="f-sl"><label for="n-sl">Stop loss</label><input id="n-sl" class="num" inputmode="decimal" placeholder="0.00"></div>
+      <div class="field" id="f-sl"><label for="n-sl">Stop loss</label><input id="n-sl" class="num" inputmode="decimal" placeholder="0.00" value="${pre.sl||""}"></div>
     </div>
     <div id="n-livemsg" class="hint" style="font-size:12.5px;color:var(--ink-3);margin-top:-4px" hidden></div>
     <div class="two">
-      <div class="field"><label for="n-risk">Risk (${esc(S.settings.currency)})</label><input id="n-risk" class="num" inputmode="decimal" value="${c.nextUsd.toFixed(2)}"></div>
+      <div class="field"><label for="n-risk">Risk (${esc(S.settings.currency)})</label><input id="n-risk" class="num" inputmode="decimal" value="${pre.risk>0? pre.risk.toFixed(2) : c.nextUsd.toFixed(2)}"></div>
       <div class="field" id="f-lev" ${ui.sheet.market==="spot"?"hidden":""}><label for="n-lev">Leverage (x)</label><input id="n-lev" class="num" inputmode="decimal" value="${pre.lev||S.settings.leverage||10}"></div>
     </div>
-    <div class="field" style="margin-top:-6px"><span class="hint">${c.nextPct.toFixed(2).replace(/\.?0+$/,"")}% of ${S.settings.mode==="flat"?"starting capital":"balance"}${c.brake?" · drawdown brake on":""}${hasSec()?" · "+secTxt(+c.nextUsd.toFixed(2)):""}. You can change it.</span></div>
+    ${pre.posKey?`<div class="warnbox">Filled in from your open ${EX[pre.ex].name} position${pre.sl?`: risk is what you'd lose if the stop at ${price(pre.sl)} is hit (${(pre.risk/(c.exBal>0?c.exBal:c.bal)*100).toFixed(2)}% of balance)`:`. It has no stop loss on the exchange, so enter the one you're using`}.</div>`:""}
+    <div class="field" style="margin-top:-6px" ${pre.risk>0?"hidden":""}><span class="hint">${c.nextPct.toFixed(2).replace(/\.?0+$/,"")}% of ${S.settings.mode==="flat"?"starting capital":"balance"}${c.brake?" · drawdown brake on":""}${hasSec()?" · "+secTxt(+c.nextUsd.toFixed(2)):""}. You can change it.</span></div>
     <div class="card preview" id="n-prev"></div>
-    <div class="field"><label for="n-note">Note (optional)</label><input id="n-note" placeholder="Setup, timeframe, reason"></div>
+    <div class="field"><label for="n-note">Note (optional)</label><input id="n-note" placeholder="Setup, timeframe, reason" value="${pre.tps&&pre.tps.length? esc("Exchange TP "+pre.tps.map(price).join(" / ")) : ""}"></div>
     <div id="n-err" class="err" hidden></div>
     <button class="btn" type="submit">Save open trade</button>
   </form>`);
@@ -928,7 +960,7 @@ function saveNew(){
   S.settings.exchange=ui.sheet.ex; S.settings.market=ui.sheet.market; if(ui.sheet.market!=="spot") S.settings.leverage=v.lev;
   S.trades.push({id:uid(), created:Date.now(), date:$("n-date").value||todayStr(), pair, ex:ui.sheet.ex, market:ui.sheet.market, lev:v.lev, dir:v.dir, entry:v.entry, sl:v.sl,
     riskPct: bal.bal>0? +(v.risk/(S.settings.mode==="flat"?bal.cap:bal.bal)*100).toFixed(3) : 0, riskUsd:+v.risk.toFixed(2),
-    outcome:null, manualR:null, fees:0, note:($("n-note").value||"").trim(), closedAt:null});
+    outcome:null, manualR:null, fees:0, note:($("n-note").value||"").trim(), closedAt:null, posKey:ui.sheet.posKey||null});
   persist(); ui.tab="trades"; ui.filter="all"; closeSheet(); toast("Trade saved");
 }
 
@@ -1036,7 +1068,9 @@ document.addEventListener("click",e=>{
   const m=e.target.closest("[data-mode]"); if(m){ S.settings.mode=m.dataset.mode; persist(); render(); return; }
   const o=e.target.closest("[data-open]"); if(o){ tradeSheet(o.dataset.open); return; }
   const mp=e.target.closest("[data-mpair]"); if(mp){ newTradeSheet({ex:ui.mk.ex, market:ui.mk.market, pair:mp.dataset.mpair, entry:+mp.dataset.mpx}); return; }
-  const ps=e.target.closest("[data-pos]"); if(ps){ const p=ui.posList[+ps.dataset.pos]; if(p) newTradeSheet({ex:p.ex, market:"futures", pair:p.pair, entry:p.entry, dir:p.dir, lev:p.lev}); return; }
+  const ps=e.target.closest("[data-pos]"); if(ps){ const p=ui.posList[+ps.dataset.pos]; if(!p) return;
+    const logged=S.trades.find(t=>!t.outcome && t.posKey && t.posKey===p.key); if(logged){ tradeSheet(logged.id); return; }
+    newTradeSheet({ex:p.ex, market:"futures", pair:p.pair, entry:p.entry, dir:p.dir, lev:p.lev, sl:p.sl, risk:p.sl? p.size*Math.abs(p.entry-p.sl) : null, posKey:p.key, tps:p.tps||[]}); return; }
   const a=e.target.closest("[data-act]"); if(!a) return;
   const act=a.dataset.act;
   if(act==="close") closeSheet();

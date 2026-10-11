@@ -205,29 +205,36 @@ public class MainActivity extends Activity {
             Map<String, String> h = new HashMap<>();
             if (ex.equals("binance") || (ex.equals("mexc") && kind.equals("spot"))) {
                 if (ex.equals("mexc") && !kind.equals("spot")) { r.body = "Unknown request"; return r; }
-                boolean fut = kind.equals("futAccount") || kind.equals("positions");
+                boolean fut = kind.equals("futAccount") || kind.equals("positions") || kind.equals("openOrders") || kind.equals("algoOrders");
                 String base = ex.equals("mexc") ? "https://api.mexc.com" : (fut ? "https://fapi.binance.com" : "https://api.binance.com");
                 String path;
                 if (kind.equals("spot")) path = "/api/v3/account";
                 else if (kind.equals("wallets") && ex.equals("binance")) path = "/sapi/v1/asset/wallet/balance";
                 else if (kind.equals("futAccount")) path = "/fapi/v2/account";
                 else if (kind.equals("positions")) path = "/fapi/v2/positionRisk";
+                else if (kind.equals("openOrders")) path = "/fapi/v1/openOrders";
+                else if (kind.equals("algoOrders")) path = "/fapi/v1/openAlgoOrders";
                 else { r.body = "Unknown request"; return r; }
                 long ts = serverTime(base + (fut ? "/fapi/v1/time" : "/api/v3/time"), "serverTime");
                 String q = "recvWindow=10000&timestamp=" + ts;
                 h.put(ex.equals("mexc") ? "X-MEXC-APIKEY" : "X-MBX-APIKEY", k[0]);
                 return request("GET", base + path + "?" + q + "&signature=" + hmacHex(k[1], q), h, null);
             } else if (ex.equals("mexc")) {
-                String path;
+                String path, params = "";
                 if (kind.equals("futAssets")) path = "/api/v1/private/account/assets";
                 else if (kind.equals("positions")) path = "/api/v1/private/position/open_positions";
+                else if (kind.equals("stopOrders")) { path = "/api/v1/private/stoporder/list/orders"; params = "is_finished=0&page_num=1&page_size=100"; }
                 else { r.body = "Unknown request"; return r; }
                 String ts = String.valueOf(serverTime("https://contract.mexc.com/api/v1/contract/ping", null));
                 h.put("ApiKey", k[0]);
                 h.put("Request-Time", ts);
-                h.put("Signature", hmacHex(k[1], k[0] + ts));
+                h.put("Signature", hmacHex(k[1], k[0] + ts + params));
                 h.put("Content-Type", "application/json");
-                return request("GET", "https://contract.mexc.com" + path, h, null);
+                String q = params.isEmpty() ? "" : "?" + params;
+                Res first = request("GET", "https://contract.mexc.com" + path + q, h, null);
+                // If the main futures address is blocked on this network, MEXC's website address serves the same API.
+                if (!first.ok && (first.body == null || !first.body.contains("{"))) return request("GET", "https://futures.mexc.com" + path + q, h, null);
+                return first;
             }
             r.body = "This exchange can't be connected yet.";
         } catch (Exception e) { r.body = String.valueOf(e.getMessage()); }
