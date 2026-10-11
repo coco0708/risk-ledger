@@ -242,14 +242,28 @@ const ALL = {
   gate:   { spot:["https://api.gateio.ws/api/v4/spot/tickers", j=>j.map(x=>[x.currency_pair,x.last])],
             futures:["https://api.gateio.ws/api/v4/futures/usdt/tickers", j=>j.map(x=>[x.contract,x.last])] },
 };
+// Backup addresses, tried when the main one is blocked or down (MEXC's website serves the same prices).
+const ALT_ALL = {
+  "mexc|spot":    [["https://www.mexc.com/open/api/v2/market/ticker", j=>j.data.map(x=>[x.symbol,x.last])]],
+  "mexc|futures": [["https://futures.mexc.com/api/v1/contract/ticker", j=>j.data.map(x=>[x.symbol,x.lastPrice])]],
+};
+const goodSrc = {}; // which address worked last time, tried first next time
 const allCache = {}; // "ex|market" -> {rows:[{pair,b,q,p}], at}
 async function allPairs(ex, market, force){
   const k=ex+"|"+market, c=allCache[k];
   if(c && !force && Date.now()-c.at<2500) return c.rows;
-  const [url, pick] = ALL[ex][market];
-  const rows = pick(JSON.parse(await httpGet(url))).map(([sym,px])=>{ const x=splitPair(sym); const p=parseFloat(px); return x&&p>0 ? {pair:x.b+"/"+x.q, b:x.b, q:x.q, p} : null; }).filter(Boolean);
-  if(!rows.length) throw new Error("No prices returned.");
-  allCache[k]={rows, at:Date.now()}; return rows;
+  const srcs=[ALL[ex][market], ...(ALT_ALL[k]||[])];
+  const order = goodSrc[k]!=null ? [srcs[goodSrc[k]], ...srcs.filter((_,i)=>i!==goodSrc[k])] : srcs;
+  let lastErr="No prices returned.";
+  for(const src of order){
+    const [url, pick] = src;
+    try{
+      const rows = pick(JSON.parse(await httpGet(url))).map(([sym,px])=>{ const x=splitPair(sym); const p=parseFloat(px); return x&&p>0 ? {pair:x.b+"/"+x.q, b:x.b, q:x.q, p} : null; }).filter(Boolean);
+      if(!rows.length) throw new Error("No prices returned.");
+      goodSrc[k]=srcs.indexOf(src); allCache[k]={rows, at:Date.now()}; return rows;
+    }catch(e){ lastErr = (e&&e.message||String(e)).slice(0,120); }
+  }
+  throw new Error(lastErr);
 }
 const QUOTES = ["USDT","USDC","FDUSD","BUSD","USD","BTC","ETH","EUR"];
 const COMMON_PAIRS = ["BTC/USDT","ETH/USDT","SOL/USDT","XRP/USDT","BNB/USDT","DOGE/USDT","ADA/USDT","SUI/USDT","LINK/USDT","AVAX/USDT","TON/USDT","PEPE/USDT"];
@@ -265,7 +279,7 @@ window.__httpCb = function(id, ok, body){ const p=pending[id]; if(!p) return; de
 function httpGet(url){ return new Promise((res,rej)=>{
   if(Native && Native.httpGet){ const id="r"+(++reqN); pending[id]={res,rej};
     try{ Native.httpGet(id,url); }catch(e){ delete pending[id]; rej(e); return; }
-    setTimeout(()=>{ if(pending[id]){ delete pending[id]; rej(new Error("timeout")); } }, 12000);
+    setTimeout(()=>{ if(pending[id]){ delete pending[id]; rej(new Error("No answer within 20 seconds")); } }, 20000);
   } else fetch(url).then(r=>r.ok?r.text():Promise.reject(new Error("HTTP "+r.status))).then(res,rej);
 }); }
 function httpPost(url, json){ return new Promise((res,rej)=>{
@@ -372,6 +386,8 @@ async function livePrice(ex, market, pair){
   const e=EX[ex], x=splitPair(pair); if(!e||!x) throw new Error("Pick an exchange and pair.");
   const m=e[market]||e.spot; let v;
   try{ v=parseFloat(m.pick(JSON.parse(await httpGet(m.api(x.b,x.q))))); }catch(err){ v=NaN; }
+  if(!(v>0)){ // main address blocked or slow: use the full price list (which has backup addresses)
+    try{ const r=(await allPairs(ex, market)).find(r=>r.b===x.b && r.q===x.q); if(r) v=r.p; }catch(err){} }
   if(!(v>0)) throw new Error(`${x.b}/${x.q} wasn't found on ${e.name} ${mktLabel(market)}.`);
   return v;
 }
@@ -690,7 +706,7 @@ async function loadMarkets(force){
   if(!Native){ return; }
   const ex=ui.mk.ex, m=ui.mk.market;
   try{ const rows=await allPairs(ex,m,force); if(ui.tab==="markets" && ui.mk.ex===ex && ui.mk.market===m) paintMarkets(rows); }
-  catch(e){ const box=$("mk-list"); if(box && ui.mk.ex===ex) box.innerHTML=`<div class="empty">Couldn't load ${EX[ex].name} ${mktLabel(m)} prices. Check your internet connection.</div>`; }
+  catch(e){ const box=$("mk-list"); if(box && ui.mk.ex===ex) box.innerHTML=`<div class="empty">Couldn't load ${EX[ex].name} ${mktLabel(m)} prices. Check your internet connection, or try another exchange.<br><span style="font-size:12px;color:var(--ink-3)">Details: ${esc(e.message||e)}</span></div>`; }
 }
 function bindMarkets(){
   $("mk-ex").addEventListener("change",e=>{ ui.mk.ex=e.target.value; $("mk-list").innerHTML=`<div class="empty">Loading prices…</div>`; loadMarkets(true); });

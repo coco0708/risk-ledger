@@ -35,12 +35,14 @@ import org.json.JSONObject;
 
 public class MainActivity extends Activity {
     private WebView web;
+    private static String userAgent = "Mozilla/5.0 (Linux; Android) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Mobile Safari/537.36";
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         web = new WebView(this);
         WebSettings s = web.getSettings();
+        try { userAgent = WebSettings.getDefaultUserAgent(this); } catch (Exception ignored) { }
         s.setJavaScriptEnabled(true);
         s.setDomStorageEnabled(true);
         s.setAllowFileAccess(false);
@@ -103,9 +105,10 @@ public class MainActivity extends Activity {
             if (!url.startsWith("https://")) throw new Exception("Only https is allowed");
             c = (HttpURLConnection) new URL(url).openConnection();
             c.setRequestMethod(method);
-            c.setConnectTimeout(10000);
-            c.setReadTimeout(10000);
-            c.setRequestProperty("User-Agent", "RiskLedger/1.2 (Android)");
+            c.setConnectTimeout(15000);
+            c.setReadTimeout(15000);
+            // Some exchanges turn away requests that don't look like a phone browser.
+            c.setRequestProperty("User-Agent", userAgent);
             c.setRequestProperty("Accept", "application/json");
             if (headers != null) for (Map.Entry<String, String> h : headers.entrySet()) c.setRequestProperty(h.getKey(), h.getValue());
             if (body != null) {
