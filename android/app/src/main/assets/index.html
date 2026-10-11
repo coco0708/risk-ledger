@@ -613,7 +613,8 @@ function viewDash(c){
     <div class="label">Balance</div>
     <div class="bal num">${money(c.bal)}<small>${cur}</small></div>
     <div class="delta num ${cls(net)}">${smoney(net)} (${ret>=0?"+":""}${(ret*100).toFixed(1)}%) <span style="color:var(--ink-3);font-family:var(--f-ui);font-weight:500">since start</span></div>
-    ${hasSec()?`<div class="sec num">${secTxt(c.bal)} · 1 ${cur} = ${fmtSec(1)}${st.rateFrom?` <span style="font-family:var(--f-ui)">(${esc(st.rateFrom)})</span>`:""}</div>`:""}
+    ${hasSec()?`<div class="sec num">${secTxt(c.bal)} · 1 ${cur} = ${fmtSec(1)}${st.rateFrom?` <span style="font-family:var(--f-ui)">(${esc(st.rateFrom)})</span>`:""}</div>`
+      : st.secondCur && st.currency==="USDT" ? `<div class="sec" style="font-family:var(--f-ui)">${esc(st.secondCur)} amounts appear once MEXC's rate loads.${st.rateErr?` ${esc(st.rateErr)}`:""} <button class="linkbtn" data-act="retryRate">Try again</button></div>`:""}
     <div class="spark" id="spark" aria-label="Equity curve"></div>
   </section>
 
@@ -1152,6 +1153,7 @@ document.addEventListener("click",e=>{
   else if(act==="restore") restoreSheet();
   else if(act==="updRate") doUpdateRate();
   else if(act==="refreshUsdt") refreshUsdt();
+  else if(act==="retryRate"){ toast("Getting MEXC's rate…"); loadMexcRate(); }
   else if(act==="capFromEx"){ toast("Getting your futures balance…"); syncAccounts().then(()=>{ if(setCapitalFromExchange()){ render(); toast(`Starting capital set to ${money(S.settings.capital)} ${S.settings.currency}`); } else toast("Your futures balance is 0. Transfer funds to futures or type the capital yourself."); }); }
   else if(act==="connect") connectSheet(a.dataset.ex);
   else if(act==="saveKey") saveKeyFlow();
@@ -1181,7 +1183,14 @@ persist();
 applyTheme();
 render();
 // keep the second-currency rate fresh (every 6 hours) when the app opens
-if(S.settings.secondCur && Native && (!S.settings.rateAt || Date.now()-S.settings.rateAt > 30*60e3)) updateRate().then(()=>render()).catch(()=>{});
+// Only MEXC's rate (or one you typed) is used; drop any rate saved from other sources.
+if(S.settings.secondRate && !/^(MEXC|Typed)/.test(S.settings.rateFrom||"")){ S.settings.secondRate=null; S.settings.rateAt=null; S.settings.rateFrom=null; persist(); }
+function loadMexcRate(){
+  return updateRate().then(()=>{ S.settings.rateErr=null; persist(); if($("sheet").hidden) render(); })
+    .catch(e=>{ S.settings.rateErr=String(e.message||e); persist(); if($("sheet").hidden && ui.tab==="dash") render(); });
+}
+if(S.settings.secondCur && Native && (!S.settings.secondRate || !S.settings.rateAt || Date.now()-S.settings.rateAt > 30*60e3)) loadMexcRate();
+setInterval(()=>{ if(S.settings.secondCur && Native && !document.hidden && (!S.settings.rateAt || Date.now()-S.settings.rateAt > 30*60e3)) loadMexcRate(); }, 60e3);
 if(Native && ACCT_EX.some(k=>keyInfo(k))) syncAccounts().then(()=>{ if($("sheet").hidden) render(); }).catch(()=>{});
 // keep Markets prices moving while that tab is open
 // Live prices: every 3 s while the app is on screen. Only the numbers change, so scrolling and typing aren't disturbed.
