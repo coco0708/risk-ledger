@@ -203,6 +203,15 @@ public class MainActivity extends Activity {
         if (k == null) { r.body = "No API key saved for this exchange."; return r; }
         try {
             Map<String, String> h = new HashMap<>();
+            if (ex.equals("mexc") && kind.startsWith("p2pRef:")) {
+                // MEXC's own USDT price in a fiat currency (needs the key's P2P Read permission).
+                String fiat = kind.substring(7);
+                if (!fiat.matches("[A-Z]{3,5}")) { r.body = "Unknown currency"; return r; }
+                long ts = serverTime("https://api.mexc.com/api/v3/time", "serverTime");
+                String q = "coinId=USDT&fiatUnit=" + fiat + "&recvWindow=10000&timestamp=" + ts;
+                h.put("X-MEXC-APIKEY", k[0]);
+                return request("GET", "https://api.mexc.com/api/v3/fiat/market/reference_price?" + q + "&signature=" + hmacHex(k[1], q), h, null);
+            }
             if (ex.equals("binance") || (ex.equals("mexc") && kind.equals("spot"))) {
                 if (ex.equals("mexc") && !kind.equals("spot")) { r.body = "Unknown request"; return r; }
                 boolean fut = kind.equals("futAccount") || kind.equals("positions") || kind.equals("openOrders") || kind.equals("algoOrders");

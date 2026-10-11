@@ -163,6 +163,9 @@ a.btn{display:block;text-align:center;text-decoration:none}
 .px{border-radius:4px;padding:0 3px}
 .livedot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--up);margin-right:6px;vertical-align:1px}
 @media (prefers-reduced-motion:no-preference){.livedot{animation:pulse 2s ease-in-out infinite}@keyframes pulse{50%{opacity:.35}}}
+.savebar{display:flex;flex-direction:column;gap:8px;border-top:1px solid var(--line);padding-top:12px;margin-top:4px}
+.savebar [data-dirty]{color:var(--warn);font-size:13px;font-weight:600}
+.savebar .btn:disabled{background:var(--line);color:var(--ink-3);cursor:default}
 .toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(92px + env(safe-area-inset-bottom,0px));background:var(--ink);color:var(--bg);padding:10px 16px;border-radius:10px;font-size:14px;font-weight:600;z-index:20}
 @media (max-width:360px){.grid{grid-template-columns:repeat(2,minmax(0,1fr))}.hero .bal{font-size:32px}}
 @media (prefers-reduced-motion:no-preference){.sheet:not([hidden]){animation:up .18s ease-out}@keyframes up{from{transform:translateY(16px);opacity:.6}to{transform:none;opacity:1}}}
@@ -456,19 +459,23 @@ function fmtSec(v){ const st=S.settings; const n=v*st.secondRate;
   try{ return new Intl.NumberFormat("en-US",{style:"currency",currency:st.secondCur,minimumFractionDigits:2,maximumFractionDigits:d}).format(n).replace("-","−"); }catch(e){ return st.secondCur+" "+money(n); } }
 function fmtCur(n){ const c=S.settings.secondCur; try{ return new Intl.NumberFormat("en-US",{style:"currency",currency:c,maximumFractionDigits:2}).format(n); }catch(e){ return c+" "+money(n); } }
 const secTxt = v => hasSec() ? "≈ "+fmtSec(v) : "";
+// USDT in your currency, as MEXC prices it (P2P reference price). Needs the MEXC key's P2P Read permission.
+async function mexcRate(fiat){
+  const j=JSON.parse(await privateGet("mexc","p2pRef:"+fiat));
+  if(j.code!==undefined && j.code!==0 && j.code!=="0") throw new Error(j.msg||("MEXC error "+j.code));
+  const d=j.data||{}, ref=num(d.referencePrice), buy=num(d.marketBuyPrice), sell=num(d.marketSellPrice);
+  const rate = ref>0 ? ref : (buy>0&&sell>0 ? (buy+sell)/2 : (buy||sell));
+  if(!(rate>0)) throw new Error(`MEXC has no USDT/${fiat} price right now.`);
+  S.settings.mexcP2P={fiat, ref, buy, sell, at:Date.now()};
+  return { rate, from: ref>0 ? "MEXC reference price" : "MEXC P2P" };
+}
 async function updateRate(){
-  const st=S.settings, to=st.secondCur.toUpperCase(), from=st.currency.toUpperCase();
-  if(from==="USDT" && st.rateSrc!=="market"){
-    try{ const p=await refreshP2P(); const r = st.rateSrc==="p2pSell" ? (p.sell||p.buy) : (p.buy||p.sell);
-      if(r>0){ st.secondRate=+r; st.rateAt=Date.now(); st.rateFrom="Binance P2P "+(st.rateSrc==="p2pSell"?"sell":"buy"); persist(); return st.secondRate; } }catch(e){}
-  }
-  st.rateFrom="Market";
-  const cg={USDT:"tether",USDC:"usd-coin",FDUSD:"first-digital-usd",BTC:"bitcoin",ETH:"ethereum"}[from];
-  let rate=null;
-  if(cg){ try{ const j=JSON.parse(await httpGet(`https://api.coingecko.com/api/v3/simple/price?ids=${cg}&vs_currencies=${to.toLowerCase()}`)); rate=j[cg]&&j[cg][to.toLowerCase()]; }catch(e){} }
-  if(!(rate>0) && !["BTC","ETH"].includes(from)){ try{ const j=JSON.parse(await httpGet(`https://open.er-api.com/v6/latest/${cg?"USD":from}`)); rate=j.rates&&j.rates[to]; }catch(e){} }
-  if(!(rate>0)) throw new Error(`Couldn't get a ${from} to ${to} rate. Check the currency code or type the rate yourself.`);
-  st.secondRate=+(+rate).toPrecision(8); st.rateAt=Date.now(); persist(); return st.secondRate;
+  const st=S.settings, to=st.secondCur.toUpperCase();
+  if(!keyInfo("mexc")) throw new Error("Connect your MEXC account to get MEXC's USDT price.");
+  let r;
+  try{ r=await mexcRate(to); }
+  catch(e){ throw new Error(/rejected|permission|401|403|700|10072/i.test(String(e.message)) ? "MEXC refused: tick P2P → Read on your MEXC API key, then try again." : String(e.message||e)); }
+  st.secondRate=+(+r.rate).toPrecision(8); st.rateAt=Date.now(); st.rateFrom=r.from; persist(); return st.secondRate;
 }
 
 /* ---------- appearance ---------- */
@@ -720,15 +727,15 @@ function viewTrades(c){
 
 function viewMarkets(){
   const st=S.settings; ui.mk = ui.mk || {ex:"mexc", market:"futures", q:""}; ui.mk.ex="mexc"; ui.mk.market="futures";
-  const p=st.p2p && st.p2p.fiat===st.secondCur ? st.p2p : null;
+  const p=st.mexcP2P && st.mexcP2P.fiat===st.secondCur ? st.mexcP2P : null;
   const usdt = st.secondCur && st.currency==="USDT" ? `<section class="card">
-    <div class="sechead"><div class="label">USDT price in ${esc(st.secondCur)}</div><button class="linkbtn" data-act="refreshUsdt">Refresh</button></div>
+    <div class="sechead"><div class="label">USDT price in ${esc(st.secondCur)} · MEXC</div><button class="linkbtn" data-act="refreshUsdt">Refresh</button></div>
     <div class="rates">
-      <div class="${st.rateSrc==="p2pBuy"?"on":""}"><span class="label">P2P buy</span><span class="num">${p&&p.buy?fmtCur(p.buy):"—"}</span></div>
-      <div class="${st.rateSrc==="p2pSell"?"on":""}"><span class="label">P2P sell</span><span class="num">${p&&p.sell?fmtCur(p.sell):"—"}</span></div>
-      <div class="${st.rateSrc==="market"?"on":""}"><span class="label">Market</span><span class="num" id="mk-mkt">${st.mktRate?fmtCur(st.mktRate):"—"}</span></div>
+      <div class="on"><span class="label">Reference</span><span class="num">${p&&p.ref?fmtCur(p.ref):"—"}</span></div>
+      <div><span class="label">P2P buy</span><span class="num">${p&&p.buy?fmtCur(p.buy):"—"}</span></div>
+      <div><span class="label">P2P sell</span><span class="num">${p&&p.sell?fmtCur(p.sell):"—"}</span></div>
     </div>
-    <div class="note" id="mk-usdtmsg">${p?`Binance P2P median of the top offers · ${new Date(p.at).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"})}. The outlined one converts your amounts.`: Native?"Tap Refresh to load prices.":"Live prices work in the Android app."}</div>
+    <div class="note" id="mk-usdtmsg">${p?`MEXC prices · ${new Date(p.at).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"})}. The outlined one converts your amounts.`: Native?"Tap Refresh to load MEXC's prices.":"Live prices work in the Android app."}</div>
   </section>` : "";
   return `${header()}${usdt}
   <div class="note" style="margin:0;font-weight:600;color:var(--ink-2)">MEXC Futures</div>
@@ -768,17 +775,16 @@ function bindMarkets(){
   loadMarkets(false);
 }
 async function refreshUsdt(){
-  const st=S.settings, msg=$("mk-usdtmsg"); if(msg) msg.textContent="Getting prices…";
-  try{ await updateRate(); }catch(e){}
-  try{ const j=JSON.parse(await httpGet(`https://api.coingecko.com/api/v3/simple/price?ids=tether&vs_currencies=${st.secondCur.toLowerCase()}`)); const r=j.tether&&j.tether[st.secondCur.toLowerCase()]; if(r>0){ st.mktRate=r; persist(); } }catch(e){}
-  if(ui.tab==="markets" && $("sheet").hidden) render();
+  const msg=$("mk-usdtmsg"); if(msg) msg.textContent="Getting MEXC's price…";
+  try{ await updateRate(); if(ui.tab==="markets" && $("sheet").hidden) render(); }
+  catch(e){ const m=$("mk-usdtmsg"); if(m) m.textContent=String(e.message||e); }
 }
 
 function viewSettings(){
   const st=S.settings;
   const tpSum=st.tps.reduce((s,t)=>s+Number(t.pct||0),0);
   return `${header()}
-  <section class="card form">
+  <section class="card form" data-card="account">
     <div class="label">Account</div>
     <div class="two">
       <div class="field"><label for="s-capital">Starting capital</label><input id="s-capital" class="num" inputmode="decimal" value="${st.capital}"></div>
@@ -788,35 +794,38 @@ function viewSettings(){
       <span class="hint">Compounding: each trade risks this % of your balance at that moment, so risk grows as you win and shrinks as you lose.</span></div>
     ${connectedEx().length?`<button class="btn ghost" data-act="capFromEx">Use my futures balance: ${money(futWalletTotal()||0)} ${esc(st.currency)}</button>`:""}
     ${st.capitalFrom?`<span class="hint" style="font-size:12.5px;color:var(--ink-3)">Starting capital taken from ${esc(st.capitalFrom)}. Open-position P&amp;L isn't included.</span>`:""}
+    <div class="savebar"><span class="hint" data-dirty hidden>Unsaved changes</span><div class="err" data-saveerr hidden></div><button class="btn" data-save="account" disabled>Save</button></div>
   </section>
 
-  <section class="card form">
+  <section class="card form" data-card="appearance">
     <div class="label">Appearance</div>
     <div class="seg" id="s-theme">${["system","light","dark"].map(k=>`<button data-theme-set="${k}" aria-pressed="${(st.theme||"system")===k}">${k==="system"?"System":k==="light"?"Light":"Dark"}</button>`).join("")}</div>
+    <div class="savebar"><span class="hint" data-dirty hidden>Unsaved changes</span><div class="err" data-saveerr hidden></div><button class="btn" data-save="appearance" disabled>Save</button></div>
   </section>
 
-  <section class="card form">
+  <section class="card form" data-card="second">
     <div class="label">Second currency</div>
     <div class="two">
       <div class="field"><label for="s-sec">Show amounts also in</label><input id="s-sec" value="${esc(st.secondCur||"")}" placeholder="PHP" autocapitalize="characters" maxlength="5"></div>
       <div class="field"><label for="s-rate">1 ${esc(st.currency)} =</label><input id="s-rate" class="num" inputmode="decimal" value="${st.secondRate||""}" placeholder="0.00"></div>
     </div>
-    ${st.currency==="USDT"?`<div class="field"><label>Rate source</label><div class="seg" id="s-src">${[["p2pBuy","P2P buy"],["p2pSell","P2P sell"],["market","Market"]].map(([k,l])=>`<button data-src="${k}" aria-pressed="${(st.rateSrc||"p2pBuy")===k}">${l}</button>`).join("")}</div>
-      <span class="hint">P2P buy is what people pay for 1 USDT on Binance P2P. P2P sell is what you get when you sell it.</span></div>`:""}
-    <button class="btn ghost" data-act="updRate" id="s-updrate">Update rate now</button>
+    <span class="hint" style="font-size:12.5px;color:var(--ink-3)">The rate is MEXC's own USDT price in this currency. It needs <b>P2P → Read</b> ticked on your MEXC API key.</span>
+    <button class="btn ghost" data-act="updRate" id="s-updrate">Get MEXC's rate now</button>
     <span class="hint" id="s-ratemsg" style="font-size:12.5px;color:var(--ink-3)">${st.rateAt?`${esc(st.rateFrom||"Rate")} · updated ${new Date(st.rateAt).toLocaleString()}. It refreshes every 30 minutes while you use the app.`:"Leave the currency blank to turn this off."}</span>
+    <div class="savebar"><span class="hint" data-dirty hidden>Unsaved changes</span><div class="err" data-saveerr hidden></div><button class="btn" data-save="second" disabled>Save</button></div>
   </section>
 
-  <section class="card form">
+  <section class="card form" data-card="accounts">
     <div class="label">Exchange accounts</div>
     ${ACCT_EX.map(k=>{ const ki=keyInfo(k), a=accounts()[k]; return `<div class="acct"><div><div class="n">${EX[k].name}</div><div class="s">${ki?`Connected · key ${esc(ki)}${a?` · ${money(acctTotal(a))} ${esc(st.currency)}`:""}`:"Not connected"}</div></div>
       ${ki?`<button class="btn ghost sm" data-act="disconnect" data-ex="${k}">Disconnect</button>`:`<button class="btn sm" data-act="connect" data-ex="${k}">Connect</button>`}</div>`; }).join("")}
     <div class="field" hidden><label>Count as exchange balance</label><div class="seg" id="s-scope"><button data-scope="futures" aria-pressed="${st.balScope!=="all"}">Futures only</button><button data-scope="all" aria-pressed="${st.balScope==="all"}">All wallets</button></div></div>
     <label class="toggle" for="s-useex"><span>Size trades from exchange balance<br><span class="hint" style="font-size:12.5px;color:var(--ink-3)">Risk is worked out from your real MEXC futures balance instead of the log's balance.</span></span><input type="checkbox" id="s-useex" ${st.useExBal?"checked":""}></label>
     <span class="hint" style="font-size:12.5px;color:var(--ink-3)">${Native?"Read-only. Keys are encrypted on this phone and never included in backups.":"Exchange accounts work in the Android app."}</span>
+    <div class="savebar"><span class="hint" data-dirty hidden>Unsaved changes</span><div class="err" data-saveerr hidden></div><button class="btn" data-save="accounts" disabled>Save</button></div>
   </section>
 
-  <section class="card form">
+  <section class="card form" data-card="leverage">
     <div class="label">Leverage</div>
     <div class="two" hidden>
       <div class="field"><label for="s-ex">Exchange</label><select id="s-ex">${EX_ORDER.map(k=>`<option value="${k}" ${st.exchange===k?"selected":""}>${EX[k].name}</option>`).join("")}</select></div>
@@ -827,24 +836,27 @@ function viewSettings(){
       <div class="field"><label for="s-mmr">Maintenance margin (%)</label><input id="s-mmr" class="num" inputmode="decimal" value="${st.mmr??0.5}"></div>
     </div>
     <span class="hint" style="font-size:12.5px;color:var(--ink-3)">All trades are MEXC Futures. Leverage changes the margin and liquidation price, not your risk: the position size always comes from your risk and stop loss. Maintenance margin is used to estimate liquidation; 0.5% fits most large pairs.</span>
+    <div class="savebar"><span class="hint" data-dirty hidden>Unsaved changes</span><div class="err" data-saveerr hidden></div><button class="btn" data-save="leverage" disabled>Save</button></div>
   </section>
 
-  <section class="card form">
+  <section class="card form" data-card="brake">
     <div class="label">Drawdown brake</div>
     <div class="two">
       <div class="field"><label for="s-dd">Trigger (% below peak)</label><input id="s-dd" class="num" inputmode="decimal" value="${st.brakeDD}"></div>
       <div class="field"><label for="s-mult">Risk while on (%)</label><input id="s-mult" class="num" inputmode="decimal" value="${st.brakeMult}"></div>
     </div>
     <span class="hint" style="font-size:12.5px;color:var(--ink-3)">At 50%, a 3% risk becomes 1.5% until the balance makes a new high.</span>
+    <div class="savebar"><span class="hint" data-dirty hidden>Unsaved changes</span><div class="err" data-saveerr hidden></div><button class="btn" data-save="brake" disabled>Save</button></div>
   </section>
 
-  <section class="card form">
+  <section class="card form" data-card="tp">
     <div class="label">Take-profit plan</div>
     <div class="tps"><span></span><span class="h">Target (R)</span><span class="h">Close (%)</span>
       ${st.tps.map((t,i)=>`<b>TP${i+1}</b><input id="s-tpr${i}" inputmode="decimal" value="${t.r}" aria-label="TP${i+1} R"><input id="s-tpp${i}" inputmode="decimal" value="${t.pct}" aria-label="TP${i+1} close percent">`).join("")}
     </div>
     <div id="tpwarn" class="err" ${Math.round(tpSum)===100?"hidden":""}>Close % adds up to ${tpSum}%. It should be 100%.</div>
     <span class="hint" style="font-size:12.5px;color:var(--ink-3)">1R is the distance from entry to stop loss. After TP1 the rest is assumed to exit at breakeven if price comes back.</span>
+    <div class="savebar"><span class="hint" data-dirty hidden>Unsaved changes</span><div class="err" data-saveerr hidden></div><button class="btn" data-save="tp" disabled>Save</button></div>
   </section>
 
   <section class="card form">
@@ -856,27 +868,66 @@ function viewSettings(){
   </section>`;
 }
 
+// Settings: changes stay on screen until you tap that section's Save.
 function bindSettings(){
   const st=S.settings;
-  const num=(id,key,min)=>{ const el=$(id); el.addEventListener("input",()=>{ const v=parseFloat(el.value); if(isFinite(v)&&v>=(min||0)){ st[key]=v; persist(); }}); el.addEventListener("change",render); };
-  num("s-capital","capital",0); $("s-capital").addEventListener("input",()=>{ st.capitalFrom=null; }); num("s-risk","riskPct",0); num("s-dd","brakeDD",0); num("s-mult","brakeMult",0);
-  $("s-currency").addEventListener("change",e=>{ st.currency=(e.target.value||"USDT").trim().toUpperCase().slice(0,8); st.secondRate=null; st.rateAt=null; persist(); render(); });
-  $("s-sec").addEventListener("change",e=>{ st.secondCur=(e.target.value||"").trim().toUpperCase().replace(/[^A-Z]/g,"").slice(0,5); st.secondRate=null; st.rateAt=null; persist(); render(); if(st.secondCur) doUpdateRate(); });
-  $("s-rate").addEventListener("change",e=>{ const v=parseFloat(e.target.value); st.secondRate = v>0 ? v : null; st.rateAt=null; persist(); render(); });
-  $("s-ex").addEventListener("change",e=>{ st.exchange=e.target.value; persist(); });
-  $("s-lev").addEventListener("change",e=>{ const v=parseFloat(e.target.value); if(v>=1){ st.leverage=Math.min(v,200); persist(); } });
-  $("s-mmr").addEventListener("change",e=>{ const v=parseFloat(e.target.value); if(v>=0 && v<50){ st.mmr=v; persist(); } });
-  $("s-useex").addEventListener("change",e=>{ st.useExBal=e.target.checked; persist(); });
-  $("s-scope").addEventListener("click",e=>{ const b=e.target.closest("button"); if(!b) return; st.balScope=b.dataset.scope; persist(); render(); });
-  if($("s-src")) $("s-src").addEventListener("click",e=>{ const b=e.target.closest("button"); if(!b) return; st.rateSrc=b.dataset.src; persist(); render(); doUpdateRate(); });
-  $("s-mkt").addEventListener("click",e=>{ const b=e.target.closest("button"); if(!b) return; st.market=b.dataset.mkt; persist(); render(); });
-  $("s-theme").addEventListener("click",e=>{ const b=e.target.closest("button"); if(!b) return; st.theme=b.dataset.themeSet; persist(); applyTheme(); render(); });
-  st.tps.forEach((t,i)=>{
-    [["s-tpr"+i,"r"],["s-tpp"+i,"pct"]].forEach(([id,k])=>{ const el=$(id);
-      el.addEventListener("input",()=>{ const v=parseFloat(el.value); if(isFinite(v)&&v>=0){ t[k]=v; persist(); const s=st.tps.reduce((a,b)=>a+Number(b.pct||0),0); const w=$("tpwarn"); w.hidden=Math.round(s)===100; w.textContent=`Close % adds up to ${s}%. It should be 100%.`; }});
-    });
+  const markDirty = card => { if(!card) return; card.querySelector("[data-dirty]").hidden=false; card.querySelector("[data-save]").disabled=false; card.querySelector("[data-saveerr]").hidden=true; };
+  document.querySelectorAll("[data-card]").forEach(card=>{
+    card.addEventListener("input", e=>{ if(e.target.matches("input,select")) markDirty(card); });
+    card.addEventListener("change", e=>{ if(e.target.matches("input,select")) markDirty(card); });
   });
+  // choice buttons only change on screen until saved
+  const segPick = (id, attr) => { const el=$(id); if(!el) return; el.addEventListener("click", e=>{ const b=e.target.closest("button"); if(!b || !b.hasAttribute(attr)) return;
+    el.querySelectorAll("button").forEach(x=>x.setAttribute("aria-pressed", String(x===b))); markDirty(el.closest("[data-card]")); }); };
+  segPick("s-theme","data-theme-set");
+  // live check of the TP total while typing
+  const tpCheck=()=>{ const sum=[0,1,2,3].reduce((a,i)=>a+(parseFloat($("s-tpp"+i).value)||0),0); const w=$("tpwarn"); w.hidden=Math.round(sum)===100; w.textContent=`Close % adds up to ${sum}%. It should be 100%.`; return sum; };
+  [0,1,2,3].forEach(i=>$("s-tpp"+i).addEventListener("input",tpCheck));
+  document.querySelectorAll("[data-save]").forEach(btn=>btn.addEventListener("click",()=>{
+    const card=btn.closest("[data-card]"), err=card.querySelector("[data-saveerr]");
+    const fail=m=>{ err.hidden=false; err.textContent=m; };
+    const n=id=>parseFloat($(id).value);
+    const name=btn.dataset.save;
+    if(name==="account"){
+      const cap=n("s-capital"), risk=n("s-risk"), cur=($("s-currency").value||"USDT").trim().toUpperCase().slice(0,8);
+      if(!(cap>0)) return fail("Starting capital must be more than 0.");
+      if(!(risk>0 && risk<=100)) return fail("Risk per trade must be between 0 and 100%.");
+      if(cap!==st.capital) st.capitalFrom=null;
+      if(cur!==st.currency){ st.secondRate=null; st.rateAt=null; }
+      st.capital=cap; st.riskPct=risk; st.currency=cur;
+    } else if(name==="appearance"){
+      const b=$("s-theme").querySelector('[aria-pressed="true"]'); st.theme=b? b.dataset.themeSet : "system"; applyTheme();
+    } else if(name==="second"){
+      const sec=($("s-sec").value||"").trim().toUpperCase().replace(/[^A-Z]/g,"").slice(0,5), rate=n("s-rate");
+      if($("s-rate").value.trim()!=="" && !(rate>0)) return fail("The rate must be a number above 0, or empty.");
+      const secChanged = sec!==st.secondCur;
+      st.secondCur=sec;
+      if(secChanged){ st.secondRate=null; st.rateAt=null; } else if(rate>0 && rate!==st.secondRate){ st.secondRate=rate; st.rateAt=null; st.rateFrom="Typed by you"; }
+      if(!sec){ st.secondRate=null; }
+      persist(); render(); toast("Saved"); if(secChanged && sec) doUpdateRate(); return;
+    } else if(name==="accounts"){
+      st.useExBal=$("s-useex").checked;
+    } else if(name==="leverage"){
+      const lev=n("s-lev"), mmr=n("s-mmr");
+      if(!(lev>=1 && lev<=200)) return fail("Leverage must be between 1 and 200.");
+      if(!(mmr>=0 && mmr<50)) return fail("Maintenance margin must be between 0 and 50%.");
+      st.leverage=lev; st.mmr=mmr;
+    } else if(name==="brake"){
+      const dd=n("s-dd"), mult=n("s-mult");
+      if(!(dd>0 && dd<100)) return fail("Trigger must be between 0 and 100%.");
+      if(!(mult>0 && mult<=100)) return fail("Risk while on must be between 0 and 100%.");
+      st.brakeDD=dd; st.brakeMult=mult;
+    } else if(name==="tp"){
+      const vals=[0,1,2,3].map(i=>({r:n("s-tpr"+i), pct:n("s-tpp"+i)}));
+      if(vals.some(v=>!(v.r>0) || !(v.pct>=0))) return fail("Each target must be above 0 and each close % 0 or more.");
+      if(Math.round(tpCheck())!==100) return fail("Close % must add up to 100% before saving.");
+      vals.forEach((v,i)=>{ st.tps[i].r=v.r; st.tps[i].pct=v.pct; });
+    }
+    persist(); render(); toast("Saved");
+  }));
 }
+// Leaving Settings with unsaved changes: say so (changes are dropped).
+function unsavedSettings(){ return ui.tab==="settings" && [...document.querySelectorAll("[data-card] [data-save]")].some(b=>!b.disabled); }
 
 /* ---------- sheets ---------- */
 function openSheet(html){ $("sheetBody").innerHTML=html; $("sheet").hidden=false; $("sheet").scrollTop=0; document.body.style.overflow="hidden"; }
@@ -1079,7 +1130,7 @@ let toastT;
 function toast(m){ const t=$("toast"); t.textContent=m; t.hidden=false; clearTimeout(toastT); toastT=setTimeout(()=>t.hidden=true,1800); }
 
 document.addEventListener("click",e=>{
-  const tab=e.target.closest("nav.tabs button"); if(tab){ ui.tab=tab.dataset.tab; window.scrollTo(0,0); render(); return; }
+  const tab=e.target.closest("nav.tabs button"); if(tab){ if(tab.dataset.tab!=="settings" && unsavedSettings()) toast("Unsaved changes were not kept"); ui.tab=tab.dataset.tab; window.scrollTo(0,0); render(); return; }
   const f=e.target.closest("[data-filter]"); if(f){ ui.filter=f.dataset.filter; render(); return; }
   const o=e.target.closest("[data-open]"); if(o){ tradeSheet(o.dataset.open); return; }
   const mp=e.target.closest("[data-mpair]"); if(mp){ newTradeSheet({ex:ui.mk.ex, market:ui.mk.market, pair:mp.dataset.mpair, entry:+mp.dataset.mpx}); return; }
