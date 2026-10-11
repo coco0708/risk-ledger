@@ -233,6 +233,7 @@ public class MainActivity extends Activity {
                 if (kind.equals("futAssets")) path = "/api/v1/private/account/assets";
                 else if (kind.equals("positions")) path = "/api/v1/private/position/open_positions";
                 else if (kind.equals("stopOrders")) { path = "/api/v1/private/stoporder/list/orders"; params = "is_finished=0&page_num=1&page_size=100"; }
+                else if (kind.startsWith("leverage:") && kind.substring(9).matches("[A-Z0-9]{1,20}_[A-Z0-9]{2,10}")) { path = "/api/v1/private/position/leverage"; params = "symbol=" + kind.substring(9); }
                 else { r.body = "Unknown request"; return r; }
                 String ts = String.valueOf(serverTime("https://contract.mexc.com/api/v1/contract/ping", null));
                 h.put("ApiKey", k[0]);
