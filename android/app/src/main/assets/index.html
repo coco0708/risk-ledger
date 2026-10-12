@@ -207,7 +207,7 @@ function saveRaw(s){ try{ if(Native) Native.save(s); else localStorage.setItem(K
 
 const DEF = { capital:1000, currency:"USDT", riskPct:3, mode:"compound", brakeDD:15, brakeMult:50,
   tps:[{r:1,pct:25},{r:2,pct:25},{r:3,pct:25},{r:4,pct:25}],
-  theme:"system", secondCur:"PHP", secondRate:null, rateAt:null, rateSrc:"p2pBuy", p2p:null, exchange:"mexc", market:"futures", useExBal:false, balScope:"futures", capitalFrom:null, leverage:10, mmr:0.5, autoLog:true };
+  theme:"system", secondCur:"PHP", secondRate:null, rateAt:null, rateSrc:"p2pBuy", p2p:null, exchange:"mexc", market:"futures", useExBal:false, balScope:"futures", capitalFrom:null, leverage:10, mmr:0.5, autoLog:true, tradeEx:"mexc" };
 let S; // {settings, trades, sample}
 let ui = { tab:"dash", filter:"all", sheet:null };
 
@@ -242,7 +242,7 @@ const EX = {
     spot:{ api:(b,q)=>`https://api.gateio.ws/api/v4/spot/tickers?currency_pair=${b}_${q}`, pick:j=>j[0].last, link:(b,q)=>`https://www.gate.io/trade/${b}_${q}` },
     futures:{ api:(b,q)=>`https://api.gateio.ws/api/v4/futures/${lc(q)}/tickers?contract=${b}_${q}`, pick:j=>j[0].last, link:(b,q)=>`https://www.gate.io/futures/${q}/${b}_${q}` } },
 };
-const EX_ORDER = ["mexc"]; // MEXC only
+const EX_ORDER = ["mexc","binance","okx","bybit"];
 // Every pair on an exchange with its last price, as [symbol, price] rows.
 const ALL = {
   mexc:   { spot:["https://api.mexc.com/api/v3/ticker/price", j=>j.map(x=>[x.symbol,x.price])],
@@ -264,6 +264,7 @@ const ALL = {
 const ALT_ALL = {
   "mexc|spot":    [["https://www.mexc.com/open/api/v2/market/ticker", j=>j.data.map(x=>[x.symbol,x.last])]],
   "mexc|futures": [["https://futures.mexc.com/api/v1/contract/ticker", j=>j.data.map(x=>[x.symbol,x.lastPrice])]],
+  "bybit|futures": [["https://api.bytick.com/v5/market/tickers?category=linear", j=>j.result.list.map(x=>[x.symbol,x.lastPrice])]],
 };
 const goodSrc = {}; // which address worked last time, tried first next time
 const allCache = {}; // "ex|market" -> {rows:[{pair,b,q,p}], at}
@@ -312,56 +313,86 @@ function privateGet(ex, kind){ return new Promise((res,rej)=>{
   setTimeout(()=>{ if(pending[id]){ delete pending[id]; rej(new Error("The exchange didn't answer. Check your connection.")); } }, 25000);
 }); }
 
-/* ---------- Binance P2P: what USDT really costs in your currency ---------- */
+/* ---------- USDT price in your currency, from the trading exchange's P2P market ---------- */
 const median = a => { const b=a.slice().sort((x,y)=>x-y); return b.length? b[Math.floor((b.length-1)/2)] : null; };
+const top5 = list => median(list.map(x=>parseFloat(x)).filter(x=>x>0).slice(0,5));
 async function p2pSide(fiat, side){
   const j=JSON.parse(await httpPost("https://p2p.binance.com/bapi/c2c/v2/friendly/c2c/adv/search",
     JSON.stringify({asset:"USDT", fiat, tradeType:side, page:1, rows:10, payTypes:[], publisherType:null, merchantCheck:false})));
-  const prices=(j.data||[]).map(d=>parseFloat(d.adv&&d.adv.price)).filter(x=>x>0).slice(0,5);
-  return median(prices);
+  return top5((j.data||[]).map(d=>d.adv&&d.adv.price));
 }
-async function refreshP2P(){
-  const st=S.settings, fiat=st.secondCur;
-  const [buy, sell] = await Promise.all([p2pSide(fiat,"BUY").catch(()=>null), p2pSide(fiat,"SELL").catch(()=>null)]);
-  if(!(buy>0) && !(sell>0)) throw new Error(`Binance P2P has no USDT/${fiat} offers right now.`);
-  st.p2p = {fiat, buy, sell, at:Date.now()}; persist(); return st.p2p;
+async function okxP2P(fiat, side){
+  const j=JSON.parse(await httpGet(`https://www.okx.com/v3/c2c/tradingOrders/books?quoteCurrency=${fiat.toLowerCase()}&baseCurrency=usdt&side=${side}&paymentMethod=all&userType=all&receivingAds=false&t=${Date.now()}`));
+  return top5(((j.data||{})[side]||[]).map(d=>d.price));
+}
+async function bybitP2P(fiat, side){
+  const j=JSON.parse(await httpPost("https://api2.bybit.com/fiat/otc/item/online",
+    JSON.stringify({userId:"", tokenId:"USDT", currencyId:fiat, payment:[], side, size:"10", page:"1", amount:"", authMaker:false, canTrade:false})));
+  return top5(((j.result||{}).items||[]).map(d=>d.price));
+}
+// MEXC: its own reference price (needs the MEXC key's P2P Read permission).
+async function mexcRate(fiat){
+  const j=JSON.parse(await privateGet("mexc","p2pRef:"+fiat));
+  if(j.code!==undefined && j.code!==0 && j.code!=="0") throw new Error(j.msg||("MEXC error "+j.code));
+  const d=j.data||{}; return {ref:num(d.referencePrice), buy:num(d.marketBuyPrice), sell:num(d.marketSellPrice)};
+}
+async function p2pQuote(ex, fiat){
+  let q;
+  if(ex==="mexc"){
+    if(!keyInfo("mexc")) throw new Error("Connect your MEXC account to get MEXC's USDT price.");
+    try{ q=await mexcRate(fiat); }
+    catch(e){ throw new Error(/rejected|permission|401|403|700|10072/i.test(String(e.message)) ? "MEXC refused: tick P2P → Read on your MEXC API key, then try again." : String(e.message||e)); }
+  } else {
+    const f = ex==="binance" ? [s=>p2pSide(fiat,s), "BUY", "SELL"] : ex==="okx" ? [s=>okxP2P(fiat,s), "sell", "buy"] : [s=>bybitP2P(fiat,s), "1", "0"];
+    const [buy, sell] = await Promise.all([f[0](f[1]).catch(()=>null), f[0](f[2]).catch(()=>null)]);
+    q={ref:0, buy:buy||0, sell:sell||0};
+  }
+  const rate = q.ref>0 ? q.ref : (q.buy>0&&q.sell>0 ? (q.buy+q.sell)/2 : (q.buy||q.sell));
+  if(!(rate>0)) throw new Error(`${EX[ex].name} has no USDT/${fiat} price right now.`);
+  S.settings.p2pQ={ex, fiat, ref:q.ref, buy:q.buy, sell:q.sell, mid:rate, at:Date.now()};
+  return { rate, from: ex==="mexc" && q.ref>0 ? "MEXC reference price" : EX[ex].name+" P2P" };
 }
 
 /* ---------- exchange accounts (read-only API keys; signing happens in the Android app) ---------- */
-const ACCT_EX = ["mexc"];
+const ACCT_EX = ["mexc","binance","okx","bybit"];
+const tradeEx = () => ACCT_EX.includes(S && S.settings.tradeEx) ? S.settings.tradeEx : "mexc";
+const exName = () => EX[tradeEx()].name;
 const keyInfo = ex => { try{ return Native && Native.keyInfo ? (Native.keyInfo(ex)||"") : ""; }catch(e){ return ""; } };
 const num = v => { const n=parseFloat(v); return isFinite(n)? n : 0; };
 function apiErr(e){ const m=String(e&&e.message||e);
   const j = m.indexOf("{")>=0 ? (()=>{ try{ return JSON.parse(m.slice(m.indexOf("{"))); }catch(x){ return null; } })() : null;
-  const msg = j && (j.msg || j.message) || m;
-  if(/-2015|-2014|invalid api|api-key|signature|401|403|602|10072/i.test(m)) return "The exchange rejected the key. Check the key and secret, and that the key has read permission.";
+  const msg = j && (j.msg || j.message || j.retMsg) || m;
+  if(/passphrase|50105/i.test(m)) return "OKX rejected the passphrase. Disconnect OKX and connect it again with the passphrase you set for this key.";
+  if(/-2015|-2014|invalid api|api-key|signature|401|403|602|10072|5011[1-3]|\b1000[34]\b|33004/i.test(m)) return "The exchange rejected the key. Check the key and secret, and that the key has read permission.";
+  if(/10005|permission denied/i.test(m)) return "The key is missing read permission for futures positions.";
   return msg.length>140 ? msg.slice(0,140)+"…" : msg; }
-// Total value of every coin in every wallet, in USDT, like the exchange's own "estimated balance".
+// Each exchange wraps its answers differently; these unwrap them or throw the exchange's message.
+const okj = s => { const j=JSON.parse(s); if(j.code!==undefined && String(j.code)!=="0") throw new Error(j.msg||("OKX error "+j.code)); return j; };
+const byj = s => { const j=JSON.parse(s); if(j.retCode!==undefined && j.retCode!==0) throw new Error(j.retMsg||("Bybit error "+j.retCode)); return j; };
+const mxj = s => { const j=JSON.parse(s); if(j.success===false) throw new Error(j.message||("code "+j.code)); return j; };
 const STABLE = new Set(["USDT","USDC","FDUSD","BUSD","TUSD","DAI","USDE","USD1"]);
 async function usdtPrices(ex){ const m={}; try{ (await allPairs(ex,"spot")).forEach(r=>{ if(r.q==="USDT") m[r.b]=r.p; }); }catch(e){} return m; }
 const valueOf = (asset, qty, px) => STABLE.has(asset) ? qty : (px[asset] ? qty*px[asset] : 0);
+// Stop loss = the tightest stop (closest to price), take-profits listed nearest first.
+function addSlTp(p, sl, tp){
+  if(sl>0) p.sl = p.sl==null? sl : (p.dir==="Long"? Math.max(p.sl,sl) : Math.min(p.sl,sl));
+  if(tp>0 && !p.tps.includes(tp)) p.tps.push(tp);
+}
+const sortTps = p => p.tps.sort((a,b)=>p.dir==="Long"? a-b : b-a);
+let okxCt=null; // OKX swap contract sizes: instId -> coins per contract
+async function okxContracts(){
+  if(okxCt) return okxCt;
+  const j=JSON.parse(await httpGet("https://www.okx.com/api/v5/public/instruments?instType=SWAP")); const m={};
+  (j.data||[]).forEach(x=>{ m[x.instId]=num(x.ctVal)||1; }); okxCt=m; return m;
+}
 async function fetchAccount(ex){
-  const out={ex, total:0, wallets:[], spot:null, futEq:null, positions:[], at:Date.now(), errors:[], unpriced:[]};
+  const out={ex, total:0, wallets:[], spot:null, futEq:null, futWallet:null, positions:[], posOk:false, at:Date.now(), errors:[]};
   const tryPart = async (label, fn) => { try{ await fn(); return true; }catch(e){ out.errors.push(label+": "+apiErr(e)); return false; } };
-  const px = await usdtPrices(ex);
   if(ex==="binance"){
-    // All wallets at once: Spot, Funding, Futures, Earn, Margin, Bots… (reported in BTC)
-    // USDT-M futures in exact USDT: wallet balance and equity (wallet + open P&L)
-    await tryPart("Futures", async()=>{ const j=JSON.parse(await privateGet(ex,"futAccount")); out.futEq=num(j.totalMarginBalance); out.futWallet=num(j.totalWalletBalance); });
-    const futExact = out.futEq;
-    const okW = await tryPart("Wallets", async()=>{ const j=JSON.parse(await privateGet(ex,"wallets"));
-      const btc = px.BTC || await livePrice("binance","spot","BTCUSDT");
-      out.wallets=(Array.isArray(j)?j:[]).map(w=>({name:String(w.walletName||"").replace(/USDⓈ-M/,"USDT-M"), usdt:num(w.balance)*btc})).filter(w=>w.usdt>=0.01);
-      out.total=out.wallets.reduce((s,w)=>s+w.usdt,0);
-      const sp=out.wallets.find(w=>/^spot$/i.test(w.name)); out.spot=sp?sp.usdt:0;
-      const fu=out.wallets.find(w=>/USDT-M/i.test(w.name)); if(futExact==null) out.futEq=fu?fu.usdt:0; });
-    if(!okW){ // fallback: spot coins + USDT-M futures
-      await tryPart("Spot", async()=>{ const j=JSON.parse(await privateGet(ex,"spot")); out.spot=(j.balances||[]).reduce((s,b)=>s+valueOf(b.asset, num(b.free)+num(b.locked), px),0); });
-      out.wallets=[{name:"Spot",usdt:out.spot||0},{name:"USDT-M Futures",usdt:out.futEq||0}].filter(w=>w.usdt>=0.01);
-      out.total=(out.spot||0)+(out.futEq||0);
-    }
-    await tryPart("Positions", async()=>{ const j=JSON.parse(await privateGet(ex,"positions"));
-      out.positions=(Array.isArray(j)?j:[]).filter(x=>num(x.positionAmt)!==0).map(x=>{ const amt=num(x.positionAmt), lev=num(x.leverage), notional=Math.abs(num(x.notional))||Math.abs(amt)*num(x.markPrice);
+    await tryPart("Futures", async()=>{ const j=JSON.parse(await privateGet(ex,"futAccount")); if(j.code<0) throw new Error(j.msg); out.futEq=num(j.totalMarginBalance); out.futWallet=num(j.totalWalletBalance); });
+    out.posOk = await tryPart("Positions", async()=>{ const j=JSON.parse(await privateGet(ex,"positions")); if(!Array.isArray(j)) throw new Error(j.msg||"No positions returned.");
+      out.levMap={}; j.forEach(x=>{ if(num(x.leverage)) out.levMap[x.symbol]=num(x.leverage); });
+      out.positions=j.filter(x=>num(x.positionAmt)!==0).map(x=>{ const amt=num(x.positionAmt), lev=num(x.leverage), notional=Math.abs(num(x.notional))||Math.abs(amt)*num(x.markPrice);
         return {key:"binance|"+x.symbol+"|"+(amt>0?"L":"S"), sym:x.symbol, posSide:x.positionSide, pair:pairLabel(x.symbol), dir:amt>0?"Long":"Short", size:Math.abs(amt), entry:num(x.entryPrice), mark:num(x.markPrice), upnl:num(x.unRealizedProfit), lev,
           liq:num(x.liquidationPrice)||null, margin:(x.marginType==="isolated"&&num(x.isolatedMargin))? num(x.isolatedMargin) : (lev? notional/lev : null), marginType:x.marginType||"", sl:null, tps:[]}; }); });
     if(out.positions.length){ const orders=[];
@@ -370,28 +401,58 @@ async function fetchAccount(ex){
       await tryPart("Algo orders", async()=>{ const raw=JSON.parse(await privateGet(ex,"algoOrders")); const arr=Array.isArray(raw)?raw:(raw.orders||raw.data||[]);
         arr.forEach(o=>orders.push({sym:o.symbol, type:String(o.orderType||o.type||""), price:num(o.triggerPrice)||num(o.stopPrice)||num(o.price), side:o.side, posSide:o.positionSide, reduce:true})); });
       attachOrders(out.positions, orders); }
+  } else if(ex==="okx"){
+    await tryPart("Balance", async()=>{ const d=(okj(await privateGet(ex,"balance")).data||[])[0]||{}; const u=(d.details||[]).find(x=>x.ccy==="USDT");
+      if(u){ out.futEq=num(u.eq); out.futWallet=num(u.eq)-num(u.upl); } else { out.futEq=num(d.totalEq); out.futWallet=num(d.totalEq)-num(d.upl); } });
+    out.posOk = await tryPart("Positions", async()=>{ const list=okj(await privateGet(ex,"positions")).data||[]; let ct={}; try{ ct=await okxContracts(); }catch(e){}
+      out.positions=list.filter(x=>num(x.pos)!==0 && /-USD[TC]-SWAP$/.test(x.instId)).map(x=>{ const pos=num(x.pos);
+        const dir = x.posSide==="long"?"Long" : x.posSide==="short"?"Short" : (pos>0?"Long":"Short");
+        const p={key:`okx|${x.posId}|${x.cTime}`, posId:x.posId, sym:x.instId, posSide:x.posSide, pair:pairLabel(x.instId.replace(/-SWAP$/,"")), dir, size:Math.abs(pos)*(ct[x.instId]||1), entry:num(x.avgPx), mark:num(x.markPx)||num(x.last), upnl:num(x.upl), lev:num(x.lever),
+          liq:num(x.liqPx)||null, margin: x.mgnMode==="isolated"? (num(x.margin)||null) : (num(x.imr)||null), marginType:x.mgnMode||"", sl:null, tps:[]};
+        (x.closeOrderAlgo||[]).forEach(a=>addSlTp(p, num(a.slTriggerPx), num(a.tpTriggerPx)));
+        return p; }); });
+    for(const kind of (out.positions.length? ["algoCond","algoOco"] : [])) await tryPart("Orders", async()=>{
+      (okj(await privateGet(ex,kind)).data||[]).forEach(o=>{
+        const p=out.positions.find(p=>p.sym===o.instId && (o.posSide && o.posSide!=="net" ? o.posSide===(p.dir==="Long"?"long":"short") : o.side===(p.dir==="Long"?"sell":"buy")));
+        if(p) addSlTp(p, num(o.slTriggerPx), num(o.tpTriggerPx)); }); });
+    out.positions.forEach(sortTps);
+  } else if(ex==="bybit"){
+    await tryPart("Balance", async()=>{ let j; try{ j=byj(await privateGet(ex,"balance")); }catch(e){ j=byj(await privateGet(ex,"balanceContract")); }
+      const a=((j.result||{}).list||[])[0]||{}; const u=(a.coin||[]).find(c=>c.coin==="USDT");
+      if(u){ out.futEq=num(u.equity); out.futWallet=num(u.walletBalance); } else { out.futEq=num(a.totalEquity); out.futWallet=num(a.totalWalletBalance); } });
+    out.posOk = await tryPart("Positions", async()=>{ const list=(byj(await privateGet(ex,"positions")).result||{}).list||[];
+      out.positions=list.filter(x=>num(x.size)>0).map(x=>{ const dir=x.side==="Sell"?"Short":"Long";
+        const p={key:`bybit|${x.symbol}|${x.positionIdx}|${dir[0]}`, sym:x.symbol, posIdx:num(x.positionIdx), pair:pairLabel(x.symbol), dir, size:num(x.size), entry:num(x.avgPrice), mark:num(x.markPrice), upnl:num(x.unrealisedPnl), lev:num(x.leverage),
+          liq:num(x.liqPrice)||null, margin:num(x.positionIM)||num(x.positionBalance)||null, marginType:num(x.tradeMode)===1?"isolated":"cross", sl:null, tps:[]};
+        addSlTp(p, num(x.stopLoss), num(x.takeProfit)); return p; }); });
+    for(const kind of (out.positions.length? ["tpslOrders","stopOrders"] : [])) await tryPart("Orders", async()=>{
+      ((byj(await privateGet(ex,kind)).result||{}).list||[]).forEach(o=>{
+        const p=out.positions.find(p=>p.sym===o.symbol && o.side===(p.dir==="Long"?"Sell":"Buy") && (!num(o.positionIdx) || num(o.positionIdx)===p.posIdx)); if(!p) return;
+        const t=String(o.stopOrderType||""), px=num(o.triggerPrice);
+        if(/TakeProfit/i.test(t)) addSlTp(p, 0, px);
+        else if(/StopLoss|Trailing/i.test(t)) addSlTp(p, px, 0);
+        else if(o.reduceOnly || o.closeOnTrigger) (p.dir==="Long"? px>p.entry : px<p.entry) ? addSlTp(p,0,px) : addSlTp(p,px,0); }); });
+    out.positions.forEach(sortTps);
   } else if(ex==="mexc"){
-    await tryPart("Futures", async()=>{ const j=JSON.parse(await privateGet(ex,"futAssets")); if(j.success===false) throw new Error(j.message||("code "+j.code));
+    const px = await usdtPrices(ex);
+    await tryPart("Futures", async()=>{ const j=mxj(await privateGet(ex,"futAssets"));
       out.futEq=(j.data||[]).reduce((s,a)=>s+valueOf(a.currency, num(a.equity), px),0);
       out.futWallet=(j.data||[]).reduce((s,a)=>s+valueOf(a.currency, num(a.equity)-num(a.unrealized), px),0); });
-    out.wallets=[{name:"Spot",usdt:out.spot||0},{name:"Futures",usdt:out.futEq||0}].filter(w=>w.usdt>=0.01);
-    out.total=(out.spot||0)+(out.futEq||0);
-    await tryPart("Positions", async()=>{ const j=JSON.parse(await privateGet(ex,"positions")); if(j.success===false) throw new Error(j.message||("code "+j.code));
+    out.posOk = await tryPart("Positions", async()=>{ const j=mxj(await privateGet(ex,"positions"));
       const list=j.data||[]; let prices={}; try{ (await allPairs("mexc","futures")).forEach(r=>prices[r.pair]=r.p); }catch(e){}
       out.positions=await Promise.all(list.map(async x=>{ const pair=pairLabel(x.symbol), dir=x.positionType===2?"Short":"Long", entry=num(x.holdAvgPrice||x.openAvgPrice), vol=num(x.holdVol);
         let cs=1; try{ const d=JSON.parse(await httpGet("https://contract.mexc.com/api/v1/contract/detail?symbol="+x.symbol)); cs=num(d.data&&d.data.contractSize)||1; }catch(e){}
         const mark=prices[pair]||0; const upnl = mark? (mark-entry)*vol*cs*(dir==="Long"?1:-1) : null;
         return {key:"mexc|"+x.positionId, posId:x.positionId, sym:x.symbol, pair, dir, size:vol*cs, entry, mark, upnl, lev:num(x.leverage),
           liq:num(x.liquidatePrice)||null, margin:num(x.im)||num(x.oim)||null, marginType:x.openType===1?"isolated":"cross", sl:null, tps:[]}; })); });
-    if(out.positions.length) await tryPart("Orders", async()=>{ const j=JSON.parse(await privateGet(ex,"stopOrders")); if(j.success===false) throw new Error(j.message||("code "+j.code));
+    if(out.positions.length) await tryPart("Orders", async()=>{ const j=mxj(await privateGet(ex,"stopOrders"));
       const arr=Array.isArray(j.data)? j.data : ((j.data&&(j.data.resultList||j.data.list))||[]);
-      arr.forEach(o=>{ const p=out.positions.find(p=>String(p.posId)===String(o.positionId)) || out.positions.find(p=>p.sym===o.symbol); if(!p) return;
-        const slp=num(o.stopLossPrice), tpp=num(o.takeProfitPrice);
-        if(slp>0) p.sl = p.sl==null? slp : (p.dir==="Long"? Math.max(p.sl,slp) : Math.min(p.sl,slp));
-        if(tpp>0 && !p.tps.includes(tpp)) p.tps.push(tpp); });
-      out.positions.forEach(p=>p.tps.sort((a,b)=>p.dir==="Long"? a-b : b-a)); });
+      arr.forEach(o=>{ const p=out.positions.find(p=>String(p.posId)===String(o.positionId)) || out.positions.find(p=>p.sym===o.symbol); if(p) addSlTp(p, num(o.stopLossPrice), num(o.takeProfitPrice)); });
+      out.positions.forEach(sortTps); });
   }
-  if(out.spot==null && out.futEq==null && !out.wallets.length) throw new Error(out.errors[0] ? out.errors[0].replace(/^\w+: /,"") : "No balance returned.");
+  out.wallets=[{name:"Futures",usdt:out.futEq||0}].filter(w=>w.usdt>=0.01);
+  out.total=out.futEq||0;
+  if(out.futEq==null) throw new Error(out.errors[0] ? out.errors[0].replace(/^[\w ]+: /,"") : "No balance returned.");
   return out;
 }
 // Match open stop / take-profit orders to each position (closing side, same symbol).
@@ -410,9 +471,10 @@ function attachOrders(positions, orders){
 }
 const accounts = () => (typeof S!=="undefined" && S && S.accounts) || {};
 const futuresOnly = () => true; // futures wallet only
-const acctTotal = a => futuresOnly() ? (a.futEq||0) : (a.total!=null ? a.total : (a.spot||0) + (a.futEq||0));
-const connectedEx = () => ACCT_EX.filter(k=>accounts()[k] && keyInfo(k));
-// Futures wallet balance across connected exchanges (excludes open-position P&L), used as starting capital
+const acctTotal = a => a.futEq||0;
+// The trading exchange, when its key is connected: balance, sizing and risk all come from it.
+const connectedEx = () => [tradeEx()].filter(k=>accounts()[k] && keyInfo(k));
+// Futures wallet balance (excludes open-position P&L), used as starting capital
 function futWalletTotal(){ const a=accounts(), l=connectedEx(); return l.length ? l.reduce((s,k)=>s+(a[k].futWallet!=null? a[k].futWallet : (a[k].futEq||0)),0) : null; }
 function setCapitalFromExchange(){
   const v=futWalletTotal(); if(!(v>0)) return false;
@@ -420,7 +482,7 @@ function setCapitalFromExchange(){
   S.settings.capitalFrom=connectedEx().map(k=>EX[k].name).join(" + ")+" futures · "+new Date().toLocaleDateString();
   persist(); return true;
 }
-function exTotal(){ const a=accounts(); const list=ACCT_EX.filter(k=>a[k] && keyInfo(k)); return list.length ? list.reduce((s,k)=>s+acctTotal(a[k]),0) : null; }
+function exTotal(){ const a=accounts(), list=connectedEx(); return list.length ? list.reduce((s,k)=>s+acctTotal(a[k]),0) : null; }
 // Next-trade risk for one connected exchange: risk % of that exchange's balance, with its own peak and brake.
 function exRisk(k){
   const a=accounts()[k]; if(!a || !keyInfo(k)) return null;
@@ -432,42 +494,78 @@ function exRisk(k){
   return { bal, peak, dd, brake, pct:pctUsed, risk: Math.max(bal,0)*pctUsed/100, open:open.length, openRisk: open.reduce((s,t)=>s+(Number(t.riskUsd)||0),0), positions:(a.positions||[]).length };
 }
 function updatePeaks(){ S.exPeak=S.exPeak||{}; connectedEx().forEach(k=>{ const b=acctTotal(accounts()[k]); if(b>(S.exPeak[k]||0)) S.exPeak[k]=b; }); }
+// Read the trading exchange, plus any exchange that still has open trades in the log (so they close properly after a switch).
+function syncList(){ const l=new Set([tradeEx()]);
+  if(S.settings.autoLog!==false) S.trades.forEach(t=>{ if(!t.outcome && t.auto && t.ex) l.add(t.ex); });
+  return [...l].filter(k=>ACCT_EX.includes(k) && keyInfo(k)); }
 async function syncAccounts(){
   S.accounts = S.accounts || {}; const res=[];
-  for(const ex of ACCT_EX){ if(!keyInfo(ex)) { delete S.accounts[ex]; continue; }
-    try{ S.accounts[ex]=await fetchAccount(ex); }catch(e){ res.push(EX[ex].name+": "+apiErr(e)); } }
+  ACCT_EX.forEach(k=>{ if(!keyInfo(k)) delete S.accounts[k]; });
+  for(const ex of syncList()){
+    try{ S.accounts[ex]=await fetchAccount(ex); }catch(e){ res.push(EX[ex].name+": "+apiErr(e)); continue; }
+    if(S.settings.autoLog!==false){ try{ await mirrorEx(ex, S.accounts[ex], ex===tradeEx()); }catch(e){} }
+  }
   updatePeaks();
-  if(S.settings.autoLog!==false && S.accounts.mexc){ try{ await mirrorMexc(S.accounts.mexc); }catch(e){} }
   persist(); return res;
 }
 
-// Every MEXC futures position is a trade in the log: opened, changed and closed on MEXC, recorded here.
-let historyCache=null;
-async function mexcHistory(force){
-  if(historyCache && !force && Date.now()-historyCache.at<15000) return historyCache.rows;
-  const j=JSON.parse(await privateGet("mexc","history"));
-  if(j.success===false) throw new Error(j.message||("code "+j.code));
-  historyCache={rows:j.data||[], at:Date.now()}; return historyCache.rows;
-}
+// Every futures position on the trading exchange is a trade in the log: opened, changed and closed there, recorded here.
 function crossedTPs(t, mark){ const tps=t.tpPrices||[]; const long=t.dir!=="Short";
   return tps.filter(tp=>tp>0 && (long? mark>=tp*0.998 : mark<=tp*1.002)).length; }
-async function mirrorMexc(acc){
-  if(!acc || !Array.isArray(acc.positions)) return;
-  const now=Date.now(), seen=new Set(); let changed=false;
+// What the exchange says about a position that's no longer open: realised P&L (after fees), exit and entry price.
+// Returns null until the exchange has the full close on record.
+const histCache={};
+async function exHistory(ex, kind){ const k=ex+"|"+kind, c=histCache[k];
+  if(c && Date.now()-c.at<10000) return c.rows;
+  const raw=await privateGet(ex,kind);
+  const rows = ex==="mexc" ? (mxj(raw).data||[]) : ex==="okx" ? (okj(raw).data||[]) : ex==="bybit" ? ((byj(raw).result||{}).list||[]) : (()=>{ const j=JSON.parse(raw); if(!Array.isArray(j)) throw new Error(j.msg||"No history"); return j; })();
+  histCache[k]={rows, at:Date.now()}; return rows; }
+async function closedFor(ex, t){
+  const long=t.dir!=="Short", expect=(t.closedSoFar||0)+(t.sizeNow||0), late = Date.now()-(t.goneAt||Date.now()) > 30*60e3;
+  if(ex==="mexc"){
+    const id=t.posKey.split("|")[1], h=(await exHistory("mexc","history")).find(x=>String(x.positionId)===id);
+    return h ? {pnl:num(h.realised), exit:num(h.closeAvgPrice), entry:num(h.openAvgPrice), at:num(h.updateTime)} : null;
+  }
+  if(ex==="okx"){
+    const [,posId,cTime]=t.posKey.split("|");
+    const h=(await exHistory("okx","history")).find(x=>String(x.posId)===posId && String(x.cTime)===cTime && !["1","4"].includes(String(x.type)));
+    return h ? {pnl:num(h.realizedPnl), exit:num(h.closeAvgPx), entry:num(h.openAvgPx), at:num(h.uTime)} : null;
+  }
+  if(ex==="bybit"){
+    const rows=(await exHistory("bybit","history")).filter(x=>x.symbol===t.sym && num(x.createdTime)>=t.created-120000 && (!t.entry || Math.abs(num(x.avgEntryPrice)/t.entry-1)<0.02));
+    const qty=rows.reduce((s,x)=>s+num(x.closedSize),0); if(!rows.length || (qty<expect*0.995 && !late)) return null;
+    return {pnl:rows.reduce((s,x)=>s+num(x.closedPnl),0), exit: qty? rows.reduce((s,x)=>s+num(x.avgExitPrice)*num(x.closedSize),0)/qty : 0, entry:0, at:Math.max(...rows.map(x=>num(x.updatedTime)))};
+  }
+  if(ex==="binance"){
+    const week=Date.now()-7*86400e3+60e3, start=Math.max(t.created-60000, week), old=t.created-60000<week;
+    const [trades, income] = await Promise.all([exHistory("binance","trades:"+t.sym+":"+start), exHistory("binance","income:"+t.sym+":"+Math.round(t.created-60000))]);
+    const closes=trades.filter(x=>x.side===(long?"SELL":"BUY") && num(x.realizedPnl)!==0);
+    const qty=closes.reduce((s,x)=>s+num(x.qty),0); if(!closes.length || (qty<(old? t.sizeNow||0 : expect)*0.995 && !late)) return null;
+    const pnl=income.filter(x=>["REALIZED_PNL","COMMISSION","FUNDING_FEE"].includes(x.incomeType)).reduce((s,x)=>s+num(x.income),0);
+    return {pnl, exit: closes.reduce((s,x)=>s+num(x.price)*num(x.qty),0)/qty, entry:0, at:Math.max(...closes.map(x=>num(x.time)))};
+  }
+  return null;
+}
+async function mirrorEx(ex, acc, addNew){
+  if(!acc || !acc.posOk || !Array.isArray(acc.positions)) return; // positions didn't load: change nothing
+  const name=EX[ex].name, now=Date.now(), seen=new Set(); let changed=false;
   for(const p of acc.positions){
     if(!p.key) continue; seen.add(p.key);
-    let t=S.trades.find(x=>x.posKey===p.key);
+    let t=S.trades.find(x=>x.posKey===p.key && !x.outcome);
     if(!t){
+      if(!addNew) continue;
       if(S.sample){ S.trades=[]; S.sample=false; }
-      const risk = p.sl ? p.size*Math.abs(p.entry-p.sl) : null, c=compute(S.settings,S.trades);
-      t={ id:uid(), created:now, date:todayStr(), pair:splitPair(p.pair).b+splitPair(p.pair).q, ex:"mexc", market:"futures", lev:p.lev, dir:p.dir,
+      const risk = p.sl ? p.size*Math.abs(p.entry-p.sl) : null, c=compute(S.settings,S.trades), sp=splitPair(p.pair);
+      t={ id:uid(), created:now, date:todayStr(), pair:sp.b+sp.q, sym:p.sym, ex, market:"futures", lev:p.lev, dir:p.dir,
           entry:p.entry, sl:p.sl||null, riskUsd: risk!=null? +risk.toFixed(2) : null, riskPct: risk!=null && c.bal>0 ? +(risk/c.bal*100).toFixed(3) : null,
-          size0:p.size, sizeNow:p.size, liq:p.liq||null, margin:p.margin||null, tpPrices:p.tps||[], tpHits:0, outcome:null, manualR:null, fees:0, note:"From MEXC", closedAt:null, posKey:p.key, auto:true };
+          size0:p.size, sizeNow:p.size, closedSoFar:0, liq:p.liq||null, margin:p.margin||null, tpPrices:p.tps||[], tpHits:0, outcome:null, manualR:null, fees:0, note:"From "+name, closedAt:null, posKey:p.key, auto:true };
       S.trades.push(t); changed=true;
-      if(typeof toast==="function") toast(`${p.pair} ${p.dir.toLowerCase()} added from MEXC`);
+      if(typeof toast==="function") toast(`${p.pair} ${p.dir.toLowerCase()} added from ${name}`);
       continue;
     }
-    // keep the logged trade in step with MEXC
+    // keep the logged trade in step with the exchange
+    if(t.goneAt){ delete t.goneAt; changed=true; }
+    if(!t.sym && p.sym){ t.sym=p.sym; changed=true; }
     if(p.entry && Math.abs(p.entry-t.entry)>1e-12){ t.entry=p.entry; changed=true; }
     if(p.lev && p.lev!==t.lev){ t.lev=p.lev; changed=true; }
     if(p.liq && p.liq!==t.liq){ t.liq=p.liq; changed=true; }
@@ -476,27 +574,25 @@ async function mirrorMexc(acc){
     if(p.tps && p.tps.length && JSON.stringify(p.tps)!==JSON.stringify(t.tpPrices)){ t.tpPrices=p.tps; changed=true; }
     if(t.sizeNow==null) t.sizeNow=p.size;
     if(p.size < t.sizeNow*0.999){ // part of the position closed: count take-profits passed
-      let mk=p.mark||p.entry; try{ mk=await livePrice("mexc","futures",p.pair); }catch(e){}
-      const n=crossedTPs(t, mk); if(n>(t.tpHits||0)){ t.tpHits=n; } t.sizeNow=p.size; changed=true;
+      let mk=p.mark||p.entry; try{ mk=await livePrice(ex,"futures",p.pair); }catch(e){}
+      const n=crossedTPs(t, mk); if(n>(t.tpHits||0)){ t.tpHits=n; }
+      t.closedSoFar=(t.closedSoFar||0)+(t.sizeNow-p.size); t.sizeNow=p.size; changed=true;
     } else if(p.size > t.sizeNow*1.001){ t.sizeNow=p.size; t.size0=Math.max(t.size0||0,p.size); changed=true; }
   }
-  // positions that are gone from MEXC: close the logged trade with MEXC's realised P&L
-  const gone=S.trades.filter(t=>!t.outcome && t.posKey && t.posKey.startsWith("mexc|") && !seen.has(t.posKey));
-  if(gone.length){
-    let hist=[]; try{ hist=await mexcHistory(true); }catch(e){}
-    for(const t of gone){
-      const id=t.posKey.split("|")[1], h=hist.find(x=>String(x.positionId)===id);
-      if(!h) continue; // not in history yet; try again next sync
-      const pnl=num(h.realised), exit=num(h.closeAvgPrice);
-      t.pnlUsd=+pnl.toFixed(4); t.exitPrice=exit||null; t.closedAt=num(h.updateTime)||now; t.sizeNow=0;
-      if(num(h.openAvgPrice)) t.entry=num(h.openAvgPrice);
-      const r = t.riskUsd>0 ? pnl/t.riskUsd : null;
-      const hits=Math.max(t.tpHits||0, exit? crossedTPs(t, exit) : 0);
-      t.outcome = hits>0 ? "TP"+Math.min(hits,4) : r!=null && r<=-0.8 ? "SL" : r!=null && Math.abs(r)<0.15 ? "BE" : "Manual";
-      t.manualR = r!=null ? +r.toFixed(3) : 0;
-      changed=true;
-      if(typeof toast==="function") toast(`${pairLabel(t.pair)} closed on MEXC · ${smoney(pnl)} USDT`);
-    }
+  // positions that are gone from the exchange: close the logged trade with the exchange's realised P&L
+  for(const t of S.trades.filter(t=>!t.outcome && t.posKey && t.posKey.startsWith(ex+"|") && !seen.has(t.posKey))){
+    if(!t.goneAt){ t.goneAt=now; changed=true; }
+    let h=null; try{ h=await closedFor(ex,t); }catch(e){}
+    if(!h) continue; // not on record yet; try again next sync
+    const pnl=h.pnl, exit=h.exit;
+    t.pnlUsd=+pnl.toFixed(4); t.exitPrice=exit||null; t.closedAt=h.at||now; t.sizeNow=0; delete t.goneAt;
+    if(h.entry) t.entry=h.entry;
+    const r = t.riskUsd>0 ? pnl/t.riskUsd : null;
+    const hits=Math.max(t.tpHits||0, exit? crossedTPs(t, exit) : 0);
+    t.outcome = hits>0 ? "TP"+Math.min(hits,4) : r!=null && r<=-0.8 ? "SL" : r!=null && Math.abs(r)<0.15 ? "BE" : "Manual";
+    t.manualR = r!=null ? +r.toFixed(3) : 0;
+    changed=true;
+    if(typeof toast==="function") toast(`${pairLabel(t.pair)} closed on ${name} · ${smoney(pnl)} USDT`);
   }
   if(changed) persist();
 }
@@ -538,22 +634,10 @@ function fmtSec(v){ const st=S.settings; const n=v*st.secondRate;
   try{ return new Intl.NumberFormat("en-US",{style:"currency",currency:st.secondCur,minimumFractionDigits:2,maximumFractionDigits:d}).format(n).replace("-","−"); }catch(e){ return st.secondCur+" "+money(n); } }
 function fmtCur(n){ const c=S.settings.secondCur; try{ return new Intl.NumberFormat("en-US",{style:"currency",currency:c,maximumFractionDigits:2}).format(n); }catch(e){ return c+" "+money(n); } }
 const secTxt = v => hasSec() ? "≈ "+fmtSec(v) : "";
-// USDT in your currency, as MEXC prices it (P2P reference price). Needs the MEXC key's P2P Read permission.
-async function mexcRate(fiat){
-  const j=JSON.parse(await privateGet("mexc","p2pRef:"+fiat));
-  if(j.code!==undefined && j.code!==0 && j.code!=="0") throw new Error(j.msg||("MEXC error "+j.code));
-  const d=j.data||{}, ref=num(d.referencePrice), buy=num(d.marketBuyPrice), sell=num(d.marketSellPrice);
-  const rate = ref>0 ? ref : (buy>0&&sell>0 ? (buy+sell)/2 : (buy||sell));
-  if(!(rate>0)) throw new Error(`MEXC has no USDT/${fiat} price right now.`);
-  S.settings.mexcP2P={fiat, ref, buy, sell, at:Date.now()};
-  return { rate, from: ref>0 ? "MEXC reference price" : "MEXC P2P" };
-}
+// USDT in your currency, as the trading exchange prices it on its P2P market.
 async function updateRate(){
   const st=S.settings, to=st.secondCur.toUpperCase();
-  if(!keyInfo("mexc")) throw new Error("Connect your MEXC account to get MEXC's USDT price.");
-  let r;
-  try{ r=await mexcRate(to); }
-  catch(e){ throw new Error(/rejected|permission|401|403|700|10072/i.test(String(e.message)) ? "MEXC refused: tick P2P → Read on your MEXC API key, then try again." : String(e.message||e)); }
+  const r=await p2pQuote(tradeEx(), to);
   st.secondRate=+(+r.rate).toPrecision(8); st.rateAt=Date.now(); st.rateFrom=r.from; persist(); return st.secondRate;
 }
 
@@ -588,7 +672,7 @@ function compute(st, trades){
   let bal=cap, peak=cap, maxDD=0, streak=0, maxStreak=0, wins=0, losses=0, be=0, sumR=0, gW=0, gL=0, sumWinR=0, sumLossR=0;
   const curve=[{bal:cap,label:"Start"}];
   for(const t of closed){
-    const real = t.pnlUsd!=null; // closed on MEXC: use its realised P&L
+    const real = t.pnlUsd!=null; // closed on the exchange: use its realised P&L
     const R = real ? (t.riskUsd>0 ? t.pnlUsd/t.riskUsd : 0) : rFor(t.outcome, t.manualR, st);
     const pnl = real ? t.pnlUsd - (Number(t.fees)||0) : R*t.riskUsd - (Number(t.fees)||0);
     t._R=R; t._pnl=pnl;
@@ -696,7 +780,7 @@ function viewDash(c){
     <div class="bal num">${money(c.bal)}<small>${cur}</small></div>
     <div class="delta num ${cls(net)}">${smoney(net)} (${ret>=0?"+":""}${(ret*100).toFixed(1)}%) <span style="color:var(--ink-3);font-family:var(--f-ui);font-weight:500">since start</span></div>
     ${hasSec()?`<div class="sec num">${secTxt(c.bal)} · 1 ${cur} = ${fmtSec(1)}${st.rateFrom?` <span style="font-family:var(--f-ui)">(${esc(st.rateFrom)})</span>`:""}</div>`
-      : st.secondCur && st.currency==="USDT" ? `<div class="sec" style="font-family:var(--f-ui)">${esc(st.secondCur)} amounts appear once MEXC's rate loads.${st.rateErr?` ${esc(st.rateErr)}`:""} <button class="linkbtn" data-act="retryRate">Try again</button></div>`:""}
+      : st.secondCur && st.currency==="USDT" ? `<div class="sec" style="font-family:var(--f-ui)">${esc(st.secondCur)} amounts appear once ${exName()}'s rate loads.${st.rateErr?` ${esc(st.rateErr)}`:""} <button class="linkbtn" data-act="retryRate">Try again</button></div>`:""}
     <div class="spark" id="spark" aria-label="Equity curve"></div>
   </section>
 
@@ -743,7 +827,7 @@ function viewDash(c){
 }
 
 function exAcctCard(){
-  const a=accounts(), list=ACCT_EX.filter(k=>a[k] && keyInfo(k)); if(!list.length) return "";
+  const a=accounts(), list=connectedEx(); if(!list.length) return "";
   const tot=list.reduce((s,k)=>s+acctTotal(a[k]),0), pos=list.reduce((s,k)=>s+(a[k].positions||[]).length,0);
   const at=Math.max(...list.map(k=>a[k].at||0));
   return `<section class="card next">
@@ -797,7 +881,7 @@ function viewTrades(c){
     return `<button class="trow" data-open="${esc(t.id)}"><span class="pair"><span class="dir ${t.dir==="Short"?"S":"L"}">${t.dir==="Short"?"SHORT":"LONG"}</span>${esc(pairLabel(t.pair))}${t.ex&&EX[t.ex]?`<span class="exn">${EX[t.ex].name}</span>`:""}</span>${res}
       <span class="sub num">${esc(t.date)} · ${t.outcome?esc(t.outcome):"@ "+price(t.entry)}${t.lev>1?` · ${t.lev}x`:""}</span>${sub2}</button>`;
   }).join("");
-  const a=accounts(); const posList=ACCT_EX.filter(k=>a[k]&&keyInfo(k)).flatMap(k=>(a[k].positions||[]).map(p=>({...p, ex:k})));
+  const a=accounts(); const posList=connectedEx().flatMap(k=>(a[k].positions||[]).map(p=>({...p, ex:k})));
   const posHtml = posList.length && S.settings.autoLog===false ? `<div class="label" style="margin-top:4px">Open on your exchanges</div><div class="list">${posList.map((p,i)=>`<button class="trow" data-pos="${i}">
       <span class="pair"><span class="dir ${p.dir==="Short"?"S":"L"}">${p.dir==="Short"?"SHORT":"LONG"}</span>${esc(p.pair)}<span class="exn">${EX[p.ex].name}</span></span>
       <span class="r num ${p.upnl==null?"":cls(p.upnl)}" data-pu="${i}">${p.upnl==null?"—":smoney(p.upnl)}</span>
@@ -809,19 +893,19 @@ function viewTrades(c){
 }
 
 function viewMarkets(){
-  const st=S.settings; ui.mk = ui.mk || {ex:"mexc", market:"futures", q:""}; ui.mk.ex="mexc"; ui.mk.market="futures";
-  const p=st.mexcP2P && st.mexcP2P.fiat===st.secondCur ? st.mexcP2P : null;
+  const st=S.settings; ui.mk = ui.mk || {ex:tradeEx(), market:"futures", q:""}; ui.mk.ex=tradeEx(); ui.mk.market="futures";
+  const p=st.p2pQ && st.p2pQ.fiat===st.secondCur && st.p2pQ.ex===tradeEx() ? st.p2pQ : null, nm=exName();
   const usdt = st.secondCur && st.currency==="USDT" ? `<section class="card">
-    <div class="sechead"><div class="label">USDT price in ${esc(st.secondCur)} · MEXC</div><button class="linkbtn" data-act="refreshUsdt">Refresh</button></div>
+    <div class="sechead"><div class="label">USDT price in ${esc(st.secondCur)} · ${nm}</div><button class="linkbtn" data-act="refreshUsdt">Refresh</button></div>
     <div class="rates">
-      <div class="on"><span class="label">Reference</span><span class="num">${p&&p.ref?fmtCur(p.ref):"—"}</span></div>
+      <div class="on"><span class="label">${p&&p.ref?"Reference":"Middle"}</span><span class="num">${p?fmtCur(p.ref||p.mid):"—"}</span></div>
       <div><span class="label">P2P buy</span><span class="num">${p&&p.buy?fmtCur(p.buy):"—"}</span></div>
       <div><span class="label">P2P sell</span><span class="num">${p&&p.sell?fmtCur(p.sell):"—"}</span></div>
     </div>
-    <div class="note" id="mk-usdtmsg">${p?`MEXC prices · ${new Date(p.at).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"})}. The outlined one converts your amounts.`: Native?"Tap Refresh to load MEXC's prices.":"Live prices work in the Android app."}</div>
+    <div class="note" id="mk-usdtmsg">${p?`${nm} prices · ${new Date(p.at).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"})}. The outlined one converts your amounts.`: Native?`Tap Refresh to load ${nm}'s prices.`:"Live prices work in the Android app."}</div>
   </section>` : "";
   return `${header()}${usdt}
-  <div class="note" style="margin:0;font-weight:600;color:var(--ink-2)">MEXC Futures</div>
+  <div class="note" style="margin:0;font-weight:600;color:var(--ink-2)">${nm} Futures</div>
   <div class="two" hidden>
     <div class="field"><select id="mk-ex" aria-label="Exchange">${EX_ORDER.map(k=>`<option value="${k}" ${ui.mk.ex===k?"selected":""}>${EX[k].name}</option>`).join("")}</select></div>
     <div class="seg" id="mk-mkt-seg"><button data-mkt="spot" aria-pressed="${ui.mk.market==="spot"}">Spot</button><button data-mkt="futures" aria-pressed="${ui.mk.market!=="spot"}">Futures</button></div>
@@ -858,7 +942,7 @@ function bindMarkets(){
   loadMarkets(false);
 }
 async function refreshUsdt(){
-  const msg=$("mk-usdtmsg"); if(msg) msg.textContent="Getting MEXC's price…";
+  const msg=$("mk-usdtmsg"); if(msg) msg.textContent=`Getting ${exName()}'s price…`;
   try{ await updateRate(); if(ui.tab==="markets" && $("sheet").hidden) render(); }
   catch(e){ const m=$("mk-usdtmsg"); if(m) m.textContent=String(e.message||e); }
 }
@@ -892,19 +976,21 @@ function viewSettings(){
       <div class="field"><label for="s-sec">Show amounts also in</label><input id="s-sec" value="${esc(st.secondCur||"")}" placeholder="PHP" autocapitalize="characters" maxlength="5"></div>
       <div class="field"><label for="s-rate">1 ${esc(st.currency)} =</label><input id="s-rate" class="num" inputmode="decimal" value="${st.secondRate||""}" placeholder="0.00"></div>
     </div>
-    <span class="hint" style="font-size:12.5px;color:var(--ink-3)">The rate is MEXC's own USDT price in this currency. It needs <b>P2P → Read</b> ticked on your MEXC API key.</span>
-    <button class="btn ghost" data-act="updRate" id="s-updrate">Get MEXC's rate now</button>
+    <span class="hint" style="font-size:12.5px;color:var(--ink-3)">${tradeEx()==="mexc"?"The rate is MEXC's own USDT price in this currency. It needs <b>P2P → Read</b> ticked on your MEXC API key.":`The rate is the USDT price on ${exName()} P2P in this currency, your trading exchange.`}</span>
+    <button class="btn ghost" data-act="updRate" id="s-updrate">Get ${exName()}'s rate now</button>
     <span class="hint" id="s-ratemsg" style="font-size:12.5px;color:var(--ink-3)">${st.rateAt?`${esc(st.rateFrom||"Rate")} · updated ${new Date(st.rateAt).toLocaleString()}. It refreshes every 30 minutes while you use the app.`:"Leave the currency blank to turn this off."}</span>
     <div class="savebar"><span class="hint" data-dirty hidden>Unsaved changes</span><div class="err" data-saveerr hidden></div><button class="btn" data-save="second" disabled>Save</button></div>
   </section>
 
   <section class="card form" data-card="accounts">
     <div class="label">Exchange accounts</div>
-    ${ACCT_EX.map(k=>{ const ki=keyInfo(k), a=accounts()[k]; return `<div class="acct"><div><div class="n">${EX[k].name}</div><div class="s">${ki?`Connected · key ${esc(ki)}${a?` · ${money(acctTotal(a))} ${esc(st.currency)}`:""}`:"Not connected"}</div></div>
+    <div class="field"><label>Trading exchange</label><div class="seg" id="s-tradeex">${ACCT_EX.map(k=>`<button data-tex="${k}" aria-pressed="${tradeEx()===k}">${EX[k].name}</button>`).join("")}</div>
+      <span class="hint" id="s-texhint" style="font-size:12.5px;color:var(--ink-3)"></span></div>
+    ${ACCT_EX.map(k=>{ const ki=keyInfo(k), a=accounts()[k]; return `<div class="acct"><div><div class="n">${EX[k].name}${k===tradeEx()?` <span class="chip up" style="font-size:11px;padding:2px 8px;vertical-align:2px">Trading</span>`:""}</div><div class="s">${ki?`Connected · key ${esc(ki)}${a&&k===tradeEx()?` · ${money(acctTotal(a))} ${esc(st.currency)}`:""}`:"Not connected"}</div></div>
       ${ki?`<button class="btn ghost sm" data-act="disconnect" data-ex="${k}">Disconnect</button>`:`<button class="btn sm" data-act="connect" data-ex="${k}">Connect</button>`}</div>`; }).join("")}
     <div class="field" hidden><label>Count as exchange balance</label><div class="seg" id="s-scope"><button data-scope="futures" aria-pressed="${st.balScope!=="all"}">Futures only</button><button data-scope="all" aria-pressed="${st.balScope==="all"}">All wallets</button></div></div>
-    <label class="toggle" for="s-autolog"><span>Log MEXC positions automatically<br><span class="hint" style="font-size:12.5px;color:var(--ink-3)">Every position you open on MEXC is added here, kept up to date, and closed with MEXC's real profit or loss.</span></span><input type="checkbox" id="s-autolog" ${st.autoLog!==false?"checked":""}></label>
-    <label class="toggle" for="s-useex"><span>Size trades from exchange balance<br><span class="hint" style="font-size:12.5px;color:var(--ink-3)">Risk is worked out from your real MEXC futures balance instead of the log's balance.</span></span><input type="checkbox" id="s-useex" ${st.useExBal?"checked":""}></label>
+    <label class="toggle" for="s-autolog"><span>Log <span data-exname>${exName()}</span> positions automatically<br><span class="hint" style="font-size:12.5px;color:var(--ink-3)">Every futures position you open on <span data-exname>${exName()}</span> is added here, kept up to date, and closed with the exchange's real profit or loss.</span></span><input type="checkbox" id="s-autolog" ${st.autoLog!==false?"checked":""}></label>
+    <label class="toggle" for="s-useex"><span>Size trades from exchange balance<br><span class="hint" style="font-size:12.5px;color:var(--ink-3)">Risk is worked out from your real <span data-exname>${exName()}</span> futures balance instead of the log's balance.</span></span><input type="checkbox" id="s-useex" ${st.useExBal?"checked":""}></label>
     <span class="hint" style="font-size:12.5px;color:var(--ink-3)">${Native?"Read-only. Keys are encrypted on this phone and never included in backups.":"Exchange accounts work in the Android app."}</span>
     <div class="savebar"><span class="hint" data-dirty hidden>Unsaved changes</span><div class="err" data-saveerr hidden></div><button class="btn" data-save="accounts" disabled>Save</button></div>
   </section>
@@ -950,6 +1036,11 @@ function bindSettings(){
   const segPick = (id, attr) => { const el=$(id); if(!el) return; el.addEventListener("click", e=>{ const b=e.target.closest("button"); if(!b || !b.hasAttribute(attr)) return;
     el.querySelectorAll("button").forEach(x=>x.setAttribute("aria-pressed", String(x===b))); markDirty(el.closest("[data-card]")); }); };
   segPick("s-theme","data-theme-set");
+  segPick("s-tradeex","data-tex");
+  const texHint=()=>{ const b=$("s-tradeex").querySelector('[aria-pressed="true"]'), k=b? b.dataset.tex : tradeEx(), n=EX[k].name;
+    document.querySelectorAll("[data-exname]").forEach(el=>el.textContent=n);
+    $("s-texhint").innerHTML = keyInfo(k) ? `Your positions, balance, leverage, prices and USDT rate come from ${n}.` : `<span style="color:var(--warn)">${n} isn't connected yet. Connect it below so its positions are logged.</span>`; };
+  $("s-tradeex").addEventListener("click", texHint); texHint();
   // live check of the TP total while typing
   const tpCheck=()=>{ const sum=[0,1,2,3].reduce((a,i)=>a+(parseFloat($("s-tpp"+i).value)||0),0); const w=$("tpwarn"); w.hidden=Math.round(sum)===100; w.textContent=`Close % adds up to ${sum}%. It should be 100%.`; return sum; };
   [0,1,2,3].forEach(i=>$("s-tpp"+i).addEventListener("input",tpCheck));
@@ -976,7 +1067,11 @@ function bindSettings(){
       if(!sec){ st.secondRate=null; }
       persist(); render(); toast("Saved"); if(secChanged && sec) doUpdateRate(); return;
     } else if(name==="accounts"){
-      st.useExBal=$("s-useex").checked; st.autoLog=$("s-autolog").checked; if(st.autoLog) setTimeout(()=>syncAccounts().then(()=>render()),100);
+      const b=$("s-tradeex").querySelector('[aria-pressed="true"]'), tex=b? b.dataset.tex : tradeEx(), switched = tex!==tradeEx();
+      st.useExBal=$("s-useex").checked; st.autoLog=$("s-autolog").checked; st.tradeEx=tex;
+      if(switched){ ui.mk=null; if(!/^Typed/.test(st.rateFrom||"")){ st.secondRate=null; st.rateAt=null; } }
+      if(st.autoLog || switched) setTimeout(()=>syncAccounts().then(()=>render()),100);
+      if(switched && st.secondCur && !st.secondRate) setTimeout(loadRate,200);
     } else if(name==="brake"){
       const dd=n("s-dd"), mult=n("s-mult");
       if(!(dd>0 && dd<100)) return fail("Trigger must be between 0 and 100%.");
@@ -998,17 +1093,29 @@ function unsavedSettings(){ return ui.tab==="settings" && [...document.querySele
 function openSheet(html){ const sh=$("sheet"); sh.classList.toggle("float", !!(ui.sheet && ui.sheet.calc)); $("sheetBody").innerHTML=html; sh.hidden=false; sh.scrollTop=0; $("sheetBody").scrollTop=0; document.body.style.overflow="hidden"; }
 function closeSheet(){ $("sheet").hidden=true; ui.sheet=null; document.body.style.overflow=""; render(); }
 
+// Leverage (and MEXC's maintenance margin rate) set on the exchange for a pair and direction, read-only.
+async function exLeverage(ex, sp, dir){
+  const short = dir==="Short";
+  if(ex==="binance"){ return {lev:((accounts().binance||{}).levMap||{})[sp.b+sp.q]||0}; }
+  if(ex==="okx"){ const d=okj(await privateGet("okx","leverage:"+sp.b+"_"+sp.q)).data||[];
+    const row=d.find(x=>x.posSide===(short?"short":"long")) || d.find(x=>x.posSide==="net") || d[0]; return {lev:num(row&&row.lever)}; }
+  if(ex==="bybit"){ const d=(byj(await privateGet("bybit","leverage:"+sp.b+"_"+sp.q)).result||{}).list||[];
+    const row=d.find(x=>num(x.positionIdx)===(short?2:1)) || d[0]; return {lev:num(row&&row.leverage)}; }
+  const d=mxj(await privateGet("mexc","leverage:"+sp.b+"_"+sp.q)).data||[];
+  const row=d.find(x=>x.positionType===(short?2:1)) || d[0]; return {lev:num(row&&row.leverage), mmr:num(row&&row.mmr)*100};
+}
 function newTradeSheet(pre){
   pre = pre && pre.pair ? pre : {};
   const c=compute(S.settings,S.trades);
   const st0=S.settings;
-  // With MEXC trades logged automatically, this sheet is a calculator: size the position before opening it on MEXC.
+  // With trades logged automatically, this sheet is a calculator: size the position before opening it on the exchange.
   const calc = S.settings.autoLog!==false && !pre.posKey;
-  ui.sheet={kind:"new", calc, posKey:pre.posKey||null, dir:pre.dir||"Long", ex:"mexc", market:"futures"};
+  const tex=pre.ex||tradeEx(), xn=EX[tex].name;
+  ui.sheet={kind:"new", calc, posKey:pre.posKey||null, dir:pre.dir||"Long", ex:tex, market:"futures"};
   openSheet(`<header><h2>${calc?"Position size":"New trade"}</h2><button class="x" data-act="close" aria-label="Close">×</button>
     ${calc?`<div class="sumline"><span class="big" id="n-sum">—</span><span class="sub" id="n-sumsub">Enter entry and stop</span></div>`:""}</header>
   <form id="ntf" class="form" novalidate>
-    <div class="note" style="margin:0;font-weight:600;color:var(--ink-2)">MEXC Futures</div>
+    <div class="note" style="margin:0;font-weight:600;color:var(--ink-2)">${xn} Futures</div>
     <div class="two" hidden>
       <div class="field"><label for="n-ex">Exchange</label><select id="n-ex">${EX_ORDER.map(k=>`<option value="${k}" ${ui.sheet.ex===k?"selected":""}>${EX[k].name}</option>`).join("")}</select></div>
       <div class="field"><label>Market</label><div class="seg" id="n-mkt"><button type="button" data-mkt="spot" aria-pressed="${ui.sheet.market==="spot"}">Spot</button><button type="button" data-mkt="futures" aria-pressed="${ui.sheet.market!=="spot"}">Futures</button></div></div>
@@ -1026,7 +1133,7 @@ function newTradeSheet(pre){
     <div id="n-livemsg" class="hint" style="font-size:12.5px;color:var(--ink-3);margin-top:-4px" hidden></div>
     <div class="two">
       <div class="field"><label for="n-risk">Risk (${esc(S.settings.currency)})</label><input id="n-risk" class="num" inputmode="decimal" value="${pre.risk>0? pre.risk.toFixed(2) : (exRisk(ui.sheet.ex)? exRisk(ui.sheet.ex).risk : c.nextUsd).toFixed(2)}"></div>
-      <div class="field" id="f-lev" ${calc && !pre.lev ? "hidden" : ""}><label for="n-lev" id="n-levlbl">${calc?"MEXC leverage":"Leverage (x)"}</label>
+      <div class="field" id="f-lev" ${calc && !pre.lev ? "hidden" : ""}><label for="n-lev" id="n-levlbl">${calc?xn+" leverage":"Leverage (x)"}</label>
         <div class="num" id="n-levro" style="font-size:18px;font-weight:500;padding:11px 0" ${calc && pre.lev ? "" : "hidden"}>${pre.lev?pre.lev+"x":""}</div>
         <input id="n-lev" class="num" inputmode="decimal" value="${pre.lev||S.settings.leverage||10}" ${calc?"hidden":""}><span class="hint" id="n-levsrc" style="font-size:12px;color:var(--ink-3)"></span></div>
     </div>
@@ -1035,7 +1142,7 @@ function newTradeSheet(pre){
     <div class="card preview" id="n-prev"></div>
     <div class="field" ${calc?"hidden":""}><label for="n-note">Note (optional)</label><input id="n-note" placeholder="Setup, timeframe, reason" value="${pre.tps&&pre.tps.length? esc("Exchange TP "+pre.tps.map(price).join(" / ")) : ""}"></div>
     <div id="n-err" class="err" hidden></div>
-    ${calc ? `<div class="note" style="margin:0">Open the trade on MEXC with this size and stop. It's added to your log automatically.</div>` : `<button class="btn" type="submit">Save open trade</button>`}
+    ${calc ? `<div class="note" style="margin:0">Open the trade on ${xn} with this size and stop. It's added to your log automatically.</div>` : `<button class="btn" type="submit">Save open trade</button>`}
   </form>`);
   const upd=()=>updatePreview(c);
   ["n-entry","n-sl","n-risk","n-lev"].forEach(id=>$(id).addEventListener("input",upd));
@@ -1054,36 +1161,38 @@ function newTradeSheet(pre){
     catch(err){ msg.textContent = Native ? err.message+" Check your internet connection and the pair." : "Live prices work in the Android app."; }
     btn.disabled=false; });
   $("n-dir").addEventListener("click",e=>{ const b=e.target.closest("button"); if(!b) return; ui.sheet.dir=b.dataset.dir; $("n-dir").querySelectorAll("button").forEach(x=>x.setAttribute("aria-pressed",String(x===b))); upd(); levFromMexc(); });
-  // Leverage follows MEXC: the open position's leverage, else the leverage set on MEXC for that pair and direction.
+  // Leverage follows the exchange: the open position's leverage, else the leverage set there for that pair and direction.
   $("n-lev").addEventListener("input",()=>{ ui.sheet.levEdited=true; $("n-levsrc").textContent=""; });
   let levTimer=null, levReq=0;
   async function levFromMexc(){
+    if(!ui.sheet || ui.sheet.kind!=="new" || !$("n-pair")) return; // card was closed
     const sp=splitPair($("n-pair").value), src=$("n-levsrc"); if(!sp || ui.sheet.levEdited || !src) return;
     const pair=sp.b+"/"+sp.q, want=ui.sheet.dir==="Short"?"Short":"Long", my=++levReq;
-    const pos=((accounts().mexc||{}).positions||[]).find(p=>p.pair===pair && p.dir===want);
+    const pos=((accounts()[tex]||{}).positions||[]).find(p=>p.pair===pair && p.dir===want);
     const showLev=(v, note)=>{ $("f-lev").hidden=false; $("n-lev").value=v;
-      if(ui.sheet.calc){ $("n-levro").hidden=false; $("n-levro").textContent=v+"x"; $("n-lev").hidden=true; $("n-levlbl").textContent="MEXC leverage"; }
+      if(ui.sheet.calc){ $("n-levro").hidden=false; $("n-levro").textContent=v+"x"; $("n-lev").hidden=true; $("n-levlbl").textContent=xn+" leverage"; }
       src.textContent=note; upd(); };
-    if(pos && pos.lev){ showLev(pos.lev, "From your open MEXC position"); return; }
-    if(!(Native && keyInfo("mexc"))){ if(ui.sheet.calc){ $("f-lev").hidden=false; $("n-lev").hidden=false; $("n-levlbl").textContent="Leverage you'll use"; } return; }
+    if(pos && pos.lev){ showLev(pos.lev, `From your open ${xn} position`); return; }
+    if(!(Native && keyInfo(tex))){ if(ui.sheet.calc){ $("f-lev").hidden=false; $("n-lev").hidden=false; $("n-levlbl").textContent="Leverage you'll use"; } return; }
     try{
-      const j=JSON.parse(await privateGet("mexc","leverage:"+sp.b+"_"+sp.q));
-      if(my!==levReq || ui.sheet.levEdited) return;
-      const row=(j.data||[]).find(x=>x.positionType===(want==="Short"?2:1)) || (j.data||[])[0];
-      if(row && num(row.mmr)>0) ui.sheet.mmr = num(row.mmr)*100;
-      if(row && num(row.leverage)>0){ showLev(num(row.leverage), `Your MEXC setting for ${pair}`); }
-      else if(ui.sheet.calc){ $("f-lev").hidden=false; $("n-levro").hidden=true; $("n-lev").hidden=false; $("n-levlbl").textContent="Leverage you'll use"; src.textContent="Not set on MEXC for this pair yet."; }
+      const row=await exLeverage(tex, sp, want);
+      if(my!==levReq || !ui.sheet || ui.sheet.levEdited || !$("n-lev")) return;
+      if(row.mmr>0) ui.sheet.mmr = row.mmr;
+      if(row.lev>0){ showLev(row.lev, `Your ${xn} setting for ${pair}`); }
+      else if(ui.sheet.calc){ $("f-lev").hidden=false; $("n-levro").hidden=true; $("n-lev").hidden=false; $("n-levlbl").textContent="Leverage you'll use"; src.textContent=`Not set on ${xn} for this pair yet.`; }
       else src.textContent="";
     }catch(e){}
   }
   $("n-pair").addEventListener("input",()=>{ clearTimeout(levTimer); levTimer=setTimeout(levFromMexc,600); });
   $("n-pair").addEventListener("change",levFromMexc);
-  // Pair search: matching MEXC futures pairs with live prices, as you type.
+  // Pair search: matching futures pairs on the trading exchange with live prices, as you type.
   const sugg=$("n-sugg");
   async function showSugg(){
+    if(!$("n-pair")) return;
     const q=($("n-pair").value||"").toUpperCase().replace(/[^A-Z0-9]/g,"");
     if(!q){ sugg.hidden=true; return; }
     let rows=[]; try{ rows=await allPairs(ui.sheet.ex, ui.sheet.market); }catch(e){ rows=COMMON_PAIRS.map(p=>{ const x=splitPair(p); return {pair:p,b:x.b,q:x.q,p:null}; }); }
+    if(!$("n-pair")) return;
     const cur=($("n-pair").value||"").toUpperCase().replace(/[^A-Z0-9]/g,"");
     if(cur!==q) return; // you kept typing
     const list=rows.filter(r=>(r.b+r.q).includes(q))
@@ -1102,7 +1211,7 @@ function newTradeSheet(pre){
     if(px>0 && !$("n-entry").value){ $("n-entry").value=px; const m=$("n-livemsg"); m.hidden=false; m.textContent=`Entry set to the live price ${price(px)}. Change it if you're using a limit price.`; }
     levFromMexc(); upd(); });
   document.addEventListener("click",e=>{ if(!e.target.closest("#n-sugg") && e.target.id!=="n-pair" && sugg) sugg.hidden=true; });
-  if(pre.lev) $("n-levsrc").textContent="From your open MEXC position"; else if($("n-pair").value) levFromMexc();
+  if(pre.lev) $("n-levsrc").textContent=`From your open ${xn} position`; else if($("n-pair").value) levFromMexc();
   $("ntf").addEventListener("submit",e=>{ e.preventDefault(); if(!ui.sheet.calc) saveNew(); });
   upd();
 }
@@ -1163,13 +1272,13 @@ function tradeSheet(id){
   <section class="card preview">
     <div class="kv"><span class="k">Date</span><span class="v">${esc(t.date)}</span></div>
     ${exLabel(t)?`<div class="kv"><span class="k">Exchange</span><span class="v" style="font-family:var(--f-ui)">${exLabel(t)}</span></div>`:""}
-    ${t.auto?`<div class="kv"><span class="k">Source</span><span class="v" style="font-family:var(--f-ui)">Synced from MEXC</span></div>`:""}
+    ${t.auto?`<div class="kv"><span class="k">Source</span><span class="v" style="font-family:var(--f-ui)">Synced from ${t.ex&&EX[t.ex]?EX[t.ex].name:"exchange"}</span></div>`:""}
     <div class="kv"><span class="k">Entry · Stop</span><span class="v">${price(t.entry)} · ${t.sl?price(t.sl):"no stop"}</span></div>
-    ${t.pnlUsd!=null?`<div class="kv"><span class="k">Closed at · MEXC P&amp;L</span><span class="v ${cls(t.pnlUsd)}">${t.exitPrice?price(t.exitPrice)+" · ":""}${smoney(t.pnlUsd)} ${esc(st.currency)}</span></div>`:""}
+    ${t.pnlUsd!=null?`<div class="kv"><span class="k">Closed at · ${t.ex&&EX[t.ex]?EX[t.ex].name:"Exchange"} P&amp;L</span><span class="v ${cls(t.pnlUsd)}">${t.exitPrice?price(t.exitPrice)+" · ":""}${smoney(t.pnlUsd)} ${esc(st.currency)}</span></div>`:""}
     <div class="kv"><span class="k">Risk</span><span class="v">${t.riskUsd>0?money(t.riskUsd):"unknown (no stop)"} ${esc(st.currency)}${hasSec()?`<br><span style="font-size:12.5px;color:var(--ink-3)">${secTxt(t.riskUsd)}</span>`:""}</span></div>
     <div class="kv"><span class="k">Size</span><span class="v">${units(size)} units</span></div>
     ${t.liq ? (()=>{ const first = t.sl && (t.dir==="Short" ? t.liq<=t.sl : t.liq>=t.sl); return `<div class="kv"><span class="k">Leverage · margin</span><span class="v">${t.lev||"—"}x${t.margin?" · "+money(t.margin):""}</span></div>
-    <div class="kv"><span class="k">Liquidation (MEXC)</span><span class="v ${first?"down":""}">${price(t.liq)}${first?"<br><span style='font-size:12px'>before your stop</span>":""}</span></div>`; })()
+    <div class="kv"><span class="k">Liquidation (${t.ex&&EX[t.ex]?EX[t.ex].name:"exchange"})</span><span class="v ${first?"down":""}">${price(t.liq)}${first?"<br><span style='font-size:12px'>before your stop</span>":""}</span></div>`; })()
     : t.lev>1 && t.sl?(()=>{ const L=levInfo(t.entry,t.sl,t.dir,size*t.entry,t.lev,t.mmr??st.mmr); return `<div class="kv"><span class="k">Leverage · margin</span><span class="v">${L.lev}x · ${money(L.margin)}</span></div>
     <div class="kv"><span class="k">Liquidation ≈</span><span class="v ${L.liqFirst?"down":""}">${price(L.liq)}${L.liqFirst?"<br><span style='font-size:12px'>before your stop</span>":""}</span></div>`; })():""}
     ${t.tpPrices&&t.tpPrices.length ? `<div class="tplist">${t.tpPrices.map((p,i)=>`<div><span class="label">TP${i+1}${t.tpHits>i?" ✓":""}</span><span class="num">${price(p)}</span></div>`).join("")}</div>`
@@ -1207,13 +1316,21 @@ function tradeSheet(id){
 
 function connectSheet(ex){
   ui.sheet={kind:"connect", ex};
-  const where = ex==="mexc" ? "MEXC: profile icon → API Management → Create API key" : "Binance: profile icon → Account → API Management → Create API → System generated";
+  const where = { mexc:"MEXC: profile icon → API Management → Create API key",
+    binance:"Binance: profile icon → Account → API Management → Create API → System generated",
+    okx:"OKX: profile icon → API → Create API key. Set a passphrase there and write it down",
+    bybit:"Bybit: profile icon → API → Create New Key → System-generated API Keys" }[ex];
+  const perm = { mexc:"Tick <b>View</b> for futures (and <b>P2P → Read</b> for the USDT rate). Leave trading and withdrawals off.",
+    binance:"Keep only <b>Enable Reading</b> ticked. Leave futures trading, withdrawals and transfers off.",
+    okx:"Choose <b>Read</b> permission only. Leave Trade and Withdraw off.",
+    bybit:"Choose <b>Read-Only</b>, and tick the read boxes for Contract / Unified Trading positions and orders." }[ex];
   openSheet(`<header><h2>Connect ${EX[ex].name}</h2><button class="x" data-act="close" aria-label="Close">×</button></header>
   <div class="form">
-    <ol class="steps"><li>${esc(where)}.</li><li>Give it <b>read / view permission only</b>. Leave trading, withdrawals and transfers off.</li><li>Copy the API key and secret here.</li></ol>
+    <ol class="steps"><li>${esc(where)}.</li><li>${perm}</li><li>Copy the API key and secret here.</li></ol>
     <div class="warnbox">Risk Ledger only reads balances and open positions. A read-only key can't place orders or move funds, even if someone got it.</div>
     <div class="field"><label for="k-key">API key</label><input id="k-key" autocomplete="off" autocapitalize="off" spellcheck="false"></div>
     <div class="field"><label for="k-sec">Secret key</label><input id="k-sec" type="password" autocomplete="off" autocapitalize="off" spellcheck="false"></div>
+    ${ex==="okx"?`<div class="field"><label for="k-pass">Passphrase</label><input id="k-pass" type="password" autocomplete="off" autocapitalize="off" spellcheck="false"><span class="hint">The one you typed when creating the key on OKX.</span></div>`:""}
     <div id="k-msg" class="err" hidden></div>
     <button class="btn" data-act="saveKey">Connect and check</button>
   </div>`);
@@ -1222,12 +1339,16 @@ async function saveKeyFlow(){
   const ex=ui.sheet.ex, msg=$("k-msg"), btn=document.querySelector('[data-act="saveKey"]');
   const show=(t,ok)=>{ msg.hidden=false; msg.textContent=t; msg.style.color=ok?"var(--up)":"var(--down)"; };
   if(!Native||!Native.saveKeys) return show("Exchange accounts work in the Android app.");
-  const err=Native.saveKeys(ex,$("k-key").value,$("k-sec").value); if(err) return show(err);
+  const err = ex==="okx" ? (Native.saveKeysPass ? Native.saveKeysPass(ex,$("k-key").value,$("k-sec").value,$("k-pass").value) : "Update the app to connect OKX.") : Native.saveKeys(ex,$("k-key").value,$("k-sec").value);
+  if(err) return show(err);
   btn.disabled=true; show("Checking with "+EX[ex].name+"…",true);
-  try{ const a=await fetchAccount(ex); S.accounts=S.accounts||{}; S.accounts[ex]=a; persist();
+  try{ const a=await fetchAccount(ex); S.accounts=S.accounts||{}; S.accounts[ex]=a;
+    const adopt = !keyInfo(tradeEx()) || tradeEx()===ex; if(adopt && tradeEx()!==ex){ S.settings.tradeEx=ex; ui.mk=null; if(!/^Typed/.test(S.settings.rateFrom||"")){ S.settings.secondRate=null; S.settings.rateAt=null; } }
+    persist();
     const fresh = S.sample || !S.trades.length;
-    if(fresh && setCapitalFromExchange()){ if(S.sample){ S.trades=[]; S.sample=false; persist(); } }
-    closeSheet(); toast(fresh && S.settings.capitalFrom ? `${EX[ex].name} connected · starting capital ${money(S.settings.capital)} ${S.settings.currency}` : `${EX[ex].name} connected · futures ${money(a.futEq||0)} ${S.settings.currency}`); }
+    if(fresh && adopt && setCapitalFromExchange()){ if(S.sample){ S.trades=[]; S.sample=false; persist(); } }
+    closeSheet(); toast(fresh && adopt && S.settings.capitalFrom ? `${EX[ex].name} connected · starting capital ${money(S.settings.capital)} ${S.settings.currency}` : `${EX[ex].name} connected · futures ${money(a.futEq||0)} ${S.settings.currency}${adopt?"":" · pick it as trading exchange to use it"}`);
+    if(adopt){ syncAccounts().then(()=>render()); if(S.settings.secondCur && !S.settings.secondRate) loadRate(); } }
   catch(e){ Native.removeKeys(ex); btn.disabled=false; show(apiErr(e)); }
 }
 
@@ -1280,7 +1401,7 @@ document.addEventListener("click",e=>{
   else if(act==="restore") restoreSheet();
   else if(act==="updRate") doUpdateRate();
   else if(act==="refreshUsdt") refreshUsdt();
-  else if(act==="retryRate"){ toast("Getting MEXC's rate…"); loadMexcRate(); }
+  else if(act==="retryRate"){ toast(`Getting ${exName()}'s rate…`); loadRate(); }
   else if(act==="capFromEx"){ toast("Getting your futures balance…"); syncAccounts().then(()=>{ if(setCapitalFromExchange()){ render(); toast(`Starting capital set to ${money(S.settings.capital)} ${S.settings.currency}`); } else toast("Your futures balance is 0. Transfer funds to futures or type the capital yourself."); }); }
   else if(act==="connect") connectSheet(a.dataset.ex);
   else if(act==="saveKey") saveKeyFlow();
@@ -1304,22 +1425,21 @@ async function doUpdateRate(){
 }
 
 S=load();
-Object.assign(S.settings, {exchange:"mexc", market:"futures", balScope:"futures"});
-if(S.accounts) Object.keys(S.accounts).forEach(k=>{ if(k!=="mexc") delete S.accounts[k]; });
-try{ if(Native && Native.keyInfo && Native.keyInfo("binance")) Native.removeKeys("binance"); }catch(e){}
+Object.assign(S.settings, {market:"futures", balScope:"futures"});
+if(!ACCT_EX.includes(S.settings.tradeEx)) S.settings.tradeEx="mexc";
 persist();
 applyTheme();
 render();
 // keep the second-currency rate fresh (every 6 hours) when the app opens
-// Only MEXC's rate (or one you typed) is used; drop any rate saved from other sources.
-if(S.settings.secondRate && !/^(MEXC|Typed)/.test(S.settings.rateFrom||"")){ S.settings.secondRate=null; S.settings.rateAt=null; S.settings.rateFrom=null; persist(); }
-function loadMexcRate(){
+// Only the trading exchange's rate (or one you typed) is used; drop a rate saved from anywhere else.
+if(S.settings.secondRate && !/^Typed/.test(S.settings.rateFrom||"") && !(S.settings.rateFrom||"").startsWith(exName())){ S.settings.secondRate=null; S.settings.rateAt=null; S.settings.rateFrom=null; persist(); }
+function loadRate(){
   return updateRate().then(()=>{ S.settings.rateErr=null; persist(); if($("sheet").hidden) render(); })
     .catch(e=>{ S.settings.rateErr=String(e.message||e); persist(); if($("sheet").hidden && ui.tab==="dash") render(); });
 }
-if(S.settings.secondCur && Native && (!S.settings.secondRate || !S.settings.rateAt || Date.now()-S.settings.rateAt > 30*60e3)) loadMexcRate();
-setInterval(()=>{ if(S.settings.secondCur && Native && !document.hidden && (!S.settings.rateAt || Date.now()-S.settings.rateAt > 30*60e3)) loadMexcRate(); }, 60e3);
-if(Native && ACCT_EX.some(k=>keyInfo(k))) syncAccounts().then(()=>{ if($("sheet").hidden) render(); }).catch(()=>{});
+if(S.settings.secondCur && Native && (!S.settings.secondRate || !S.settings.rateAt || Date.now()-S.settings.rateAt > 30*60e3)) loadRate();
+setInterval(()=>{ if(S.settings.secondCur && Native && !document.hidden && (!S.settings.rateAt || Date.now()-S.settings.rateAt > 30*60e3)) loadRate(); }, 60e3);
+if(Native && syncList().length) syncAccounts().then(()=>{ if($("sheet").hidden) render(); }).catch(()=>{});
 // keep Markets prices moving while that tab is open
 // Live prices: every 3 s while the app is on screen. Only the numbers change, so scrolling and typing aren't disturbed.
 async function refreshPositions(){
@@ -1348,9 +1468,9 @@ async function tick(){
 }
 setInterval(tick, 3000);
 let mirrorBusy=false;
-setInterval(async()=>{ if(mirrorBusy || !Native || document.hidden || !keyInfo("mexc") || S.settings.autoLog===false) return; mirrorBusy=true;
-  try{ const before=JSON.stringify(S.trades.map(t=>[t.id,t.outcome,t.sl,t.sizeNow,t.entry])); await syncAccounts();
-    if(before!==JSON.stringify(S.trades.map(t=>[t.id,t.outcome,t.sl,t.sizeNow,t.entry])) && $("sheet").hidden && ui.tab!=="settings") render(); }
+setInterval(async()=>{ if(mirrorBusy || !Native || document.hidden || !syncList().length) return; mirrorBusy=true;
+  try{ const before=JSON.stringify(S.trades.map(t=>[t.id,t.outcome,t.sl,t.sizeNow,t.entry,t.lev,t.tpHits])); await syncAccounts();
+    if(before!==JSON.stringify(S.trades.map(t=>[t.id,t.outcome,t.sl,t.sizeNow,t.entry,t.lev,t.tpHits])) && $("sheet").hidden && ui.tab!=="settings") render(); }
   catch(e){} finally{ mirrorBusy=false; } }, 20000);
 document.addEventListener("visibilitychange", ()=>{ if(!document.hidden) tick(); });
 </script>

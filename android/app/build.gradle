@@ -6,8 +6,8 @@ android {
         applicationId "com.riskledger.app"
         minSdk 26
         targetSdk 34
-        versionCode 23
-        versionName "1.9.4"
+        versionCode 24
+        versionName "2.1.0"
     }
     signingConfigs {
         // Fixed key kept in the project so every build can update the app without losing your data.
