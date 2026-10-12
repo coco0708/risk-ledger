@@ -773,15 +773,21 @@ function viewDash(c){
   const pf = c.pf==null? "—" : c.pf===Infinity? "∞" : c.pf.toFixed(2);
   return `${header()}${sampleBanner()}
   <section class="card hero" aria-label="Balance">
-    <div class="sechead"><div class="label">Balance${exAll!=null?` · ${exName()} futures`:""}</div>${exAll!=null?`<button class="linkbtn" data-act="syncAcct">Refresh</button>`:""}</div>
+    <div class="sechead"><div class="label">Balance${exAll!=null?` · ${exName()} futures <span class="chip up" style="font-size:11px;padding:2px 8px;letter-spacing:0;text-transform:none;vertical-align:1px">Trading</span>`:""}</div>${exAll!=null?`<button class="linkbtn" data-act="syncAcct">Refresh</button>`:""}</div>
     <div class="bal num">${money(shown)}<small>${cur}</small></div>
-    ${(()=>{ const a=exAll!=null? accounts()[tradeEx()] : null; if(!a) return "";
-      const w=a.futWallet??a.futEq??0, u=(a.futEq||0)-w, n=(a.positions||[]).length;
-      return `<div class="sec num">wallet ${money(w)} · open P&amp;L <span class="${cls(u)}">${smoney(u)}</span> · ${n} open</div>`; })()}
-    <div class="delta num ${cls(net)}">${smoney(net)} <span style="color:var(--ink-3);font-family:var(--f-ui);font-weight:500">from ${c.n} closed trade${c.n===1?"":"s"}</span></div>
     ${hasSec()?`<div class="sec num">${secTxt(shown)} · 1 ${cur} = ${fmtSec(1)}${st.rateFrom?` <span style="font-family:var(--f-ui)">(${esc(st.rateFrom)})</span>`:""}</div>`
       : st.secondCur && st.currency==="USDT" ? `<div class="sec" style="font-family:var(--f-ui)">${esc(st.secondCur)} amounts appear once ${exName()}'s rate loads.${st.rateErr?` ${esc(st.rateErr)}`:""} <button class="linkbtn" data-act="retryRate">Try again</button></div>`:""}
+    ${(()=>{ const a=exAll!=null? accounts()[tradeEx()] : null;
+      const closedRow=`<div class="kv"><span class="k">Closed trades (${c.n})</span><span class="v num ${cls(net)}">${smoney(net)}</span></div>`;
+      if(!a) return `<div style="margin-top:8px">${closedRow}</div>`;
+      const w=a.futWallet??a.futEq??0, u=(a.futEq||0)-w, n=(a.positions||[]).length;
+      return `<div style="margin-top:8px">
+        <div class="kv"><span class="k">Wallet</span><span class="v num">${money(w)}</span></div>
+        <div class="kv"><span class="k">Open P&amp;L</span><span class="v num ${cls(u)}">${smoney(u)}</span></div>
+        <div class="kv"><span class="k">Open positions</span><span class="v num">${n}</span></div>
+        ${closedRow}</div>`; })()}
     <div class="spark" id="spark" aria-label="Equity curve"></div>
+    ${exAll!=null&&accounts()[tradeEx()]?`<span class="hint" style="font-size:12.5px;color:var(--ink-3);padding-bottom:8px">${tradeEx()==="binance"?"USDT-M futures":"USDT futures"}, including open P&amp;L · updated ${new Date(accounts()[tradeEx()].at).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"})}</span>`:""}
   </section>
 
   <section class="card next">
