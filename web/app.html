@@ -4,17 +4,17 @@
 /* Layout: one narrow column, summary first; fixed bottom tab bar; full-screen sheets for forms */
 :root{
   --bg:#f5f6f8; --surface:#ffffff; --line:#e3e6ec; --ink:#14171f; --ink-2:#5b6272; --ink-3:#8b92a1;
-  --accent:#2f4bd8; --accent-soft:#e8ecfd; --up:#0f8a5f; --up-soft:#e2f4ec; --down:#c8372d; --down-soft:#fbe7e5; --warn:#a86400; --warn-soft:#fdf0db;
+  --accent:#0f8a5f; --accent-soft:#e2f4ec; --up:#0f8a5f; --up-soft:#e2f4ec; --down:#c8372d; --down-soft:#fbe7e5; --warn:#a86400; --warn-soft:#fdf0db;
   --f-ui:"Figtree",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
   --f-num:"JetBrains Mono",ui-monospace,"Roboto Mono",Menlo,monospace;
   --r:14px;
 }
 @media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
   --bg:#0e1015; --surface:#171a21; --line:#262a34; --ink:#eef0f4; --ink-2:#a3a9b6; --ink-3:#6f7584;
-  --accent:#7d93ff; --accent-soft:#1d2440; --up:#3ccf91; --up-soft:#12291f; --down:#ff7a6e; --down-soft:#331816; --warn:#f0a63a; --warn-soft:#2e2312; color-scheme:dark}}
+  --accent:#3ccf91; --accent-soft:#12291f; --up:#3ccf91; --up-soft:#12291f; --down:#ff7a6e; --down-soft:#331816; --warn:#f0a63a; --warn-soft:#2e2312; color-scheme:dark}}
 :root[data-theme="dark"]{
   --bg:#0e1015; --surface:#171a21; --line:#262a34; --ink:#eef0f4; --ink-2:#a3a9b6; --ink-3:#6f7584;
-  --accent:#7d93ff; --accent-soft:#1d2440; --up:#3ccf91; --up-soft:#12291f; --down:#ff7a6e; --down-soft:#331816; --warn:#f0a63a; --warn-soft:#2e2312; color-scheme:dark}
+  --accent:#3ccf91; --accent-soft:#12291f; --up:#3ccf91; --up-soft:#12291f; --down:#ff7a6e; --down-soft:#331816; --warn:#f0a63a; --warn-soft:#2e2312; color-scheme:dark}
 *{box-sizing:border-box}
 html,body{min-height:100%}
 body{background:var(--bg);color:var(--ink);font-family:var(--f-ui);font-size:15px;line-height:1.4;-webkit-tap-highlight-color:transparent}
@@ -87,7 +87,7 @@ header.top{display:flex;align-items:center;justify-content:space-between;padding
 .btn.ghost{background:var(--line);color:var(--ink)}
 .btn.danger{background:var(--down-soft);color:var(--down)}
 .btn.sm{width:auto;padding:8px 12px;font-size:13.5px;border-radius:10px}
-.fab{position:fixed;right:max(16px,calc(50% - 244px));bottom:calc(80px + env(safe-area-inset-bottom,0px));border:0;border-radius:16px;background:var(--accent);color:var(--surface);font-weight:700;padding:15px 20px;font-size:15px;box-shadow:0 6px 20px rgba(20,30,80,.25);cursor:pointer;z-index:5}
+.fab{position:fixed;right:max(16px,calc(50% - 244px));bottom:calc(80px + env(safe-area-inset-bottom,0px));border:0;border-radius:16px;background:var(--accent);color:var(--surface);font-weight:700;padding:15px 20px;font-size:15px;box-shadow:0 6px 20px rgba(10,60,40,.28);cursor:pointer;z-index:5}
 button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 /* tabs */
 nav.tabs{position:fixed;left:0;right:0;bottom:0;background:var(--surface);border-top:1px solid var(--line);display:flex;justify-content:center;padding:6px 8px calc(6px + env(safe-area-inset-bottom,0px));z-index:6}
@@ -158,7 +158,10 @@ a.btn{display:block;text-align:center;text-decoration:none}
 .acct .n{font-weight:600}
 .acct .s{font-size:12.5px;color:var(--ink-3)}
 .toggle{display:flex;align-items:center;justify-content:space-between;gap:12px}
-.toggle input{width:44px;height:26px;accent-color:var(--accent)}
+.toggle input[type=checkbox]{-webkit-appearance:none;appearance:none;flex:0 0 26px;width:26px;height:26px;margin:0;border:2px solid var(--ink-3);border-radius:8px;background:transparent;display:grid;place-items:center;cursor:pointer;transition:background .15s,border-color .15s}
+.toggle input[type=checkbox]::after{content:"";width:6px;height:12px;border:solid var(--surface);border-width:0 2.5px 2.5px 0;transform:translateY(-1.5px) rotate(45deg);opacity:0}
+.toggle input[type=checkbox]:checked{background:var(--accent);border-color:var(--accent)}
+.toggle input[type=checkbox]:checked::after{opacity:1}
 .steps{margin:0;padding-left:20px;color:var(--ink-2);font-size:14px;display:flex;flex-direction:column;gap:6px}
 .warnbox{background:var(--warn-soft);color:var(--ink);border-radius:10px;padding:10px 12px;font-size:13.5px}
 @keyframes fu{from{background:var(--up-soft)}to{background:transparent}}
