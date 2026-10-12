@@ -443,7 +443,7 @@ async function mirrorMexc(acc){
       const risk = p.sl ? p.size*Math.abs(p.entry-p.sl) : null, c=compute(S.settings,S.trades);
       t={ id:uid(), created:now, date:todayStr(), pair:splitPair(p.pair).b+splitPair(p.pair).q, ex:"mexc", market:"futures", lev:p.lev, dir:p.dir,
           entry:p.entry, sl:p.sl||null, riskUsd: risk!=null? +risk.toFixed(2) : null, riskPct: risk!=null && c.bal>0 ? +(risk/c.bal*100).toFixed(3) : null,
-          size0:p.size, sizeNow:p.size, tpPrices:p.tps||[], tpHits:0, outcome:null, manualR:null, fees:0, note:"From MEXC", closedAt:null, posKey:p.key, auto:true };
+          size0:p.size, sizeNow:p.size, liq:p.liq||null, margin:p.margin||null, tpPrices:p.tps||[], tpHits:0, outcome:null, manualR:null, fees:0, note:"From MEXC", closedAt:null, posKey:p.key, auto:true };
       S.trades.push(t); changed=true;
       if(typeof toast==="function") toast(`${p.pair} ${p.dir.toLowerCase()} added from MEXC`);
       continue;
@@ -451,6 +451,8 @@ async function mirrorMexc(acc){
     // keep the logged trade in step with MEXC
     if(p.entry && Math.abs(p.entry-t.entry)>1e-12){ t.entry=p.entry; changed=true; }
     if(p.lev && p.lev!==t.lev){ t.lev=p.lev; changed=true; }
+    if(p.liq && p.liq!==t.liq){ t.liq=p.liq; changed=true; }
+    if(p.margin && p.margin!==t.margin){ t.margin=p.margin; changed=true; }
     if(p.sl && p.sl!==t.sl){ t.sl=p.sl; changed=true; if(!(t.riskUsd>0)){ t.riskUsd=+(p.size*Math.abs(p.entry-p.sl)).toFixed(2); } }
     if(p.tps && p.tps.length && JSON.stringify(p.tps)!==JSON.stringify(t.tpPrices)){ t.tpPrices=p.tps; changed=true; }
     if(t.sizeNow==null) t.sizeNow=p.size;
@@ -887,20 +889,6 @@ function viewSettings(){
     <div class="savebar"><span class="hint" data-dirty hidden>Unsaved changes</span><div class="err" data-saveerr hidden></div><button class="btn" data-save="accounts" disabled>Save</button></div>
   </section>
 
-  <section class="card form" data-card="leverage">
-    <div class="label">Leverage</div>
-    <div class="two" hidden>
-      <div class="field"><label for="s-ex">Exchange</label><select id="s-ex">${EX_ORDER.map(k=>`<option value="${k}" ${st.exchange===k?"selected":""}>${EX[k].name}</option>`).join("")}</select></div>
-      <div class="field"><label>Market</label><div class="seg" id="s-mkt"><button data-mkt="spot" aria-pressed="${st.market==="spot"}">Spot</button><button data-mkt="futures" aria-pressed="${st.market!=="spot"}">Futures</button></div></div>
-    </div>
-    <div class="two">
-      <div class="field"><label for="s-lev">Default leverage (x)</label><input id="s-lev" class="num" inputmode="decimal" value="${st.leverage||10}"></div>
-      <div class="field"><label for="s-mmr">Maintenance margin (%)</label><input id="s-mmr" class="num" inputmode="decimal" value="${st.mmr??0.5}"></div>
-    </div>
-    <span class="hint" style="font-size:12.5px;color:var(--ink-3)">All trades are MEXC Futures. Leverage changes the margin and liquidation price, not your risk: the position size always comes from your risk and stop loss. Maintenance margin is used to estimate liquidation; 0.5% fits most large pairs.</span>
-    <div class="savebar"><span class="hint" data-dirty hidden>Unsaved changes</span><div class="err" data-saveerr hidden></div><button class="btn" data-save="leverage" disabled>Save</button></div>
-  </section>
-
   <section class="card form" data-card="brake">
     <div class="label">Drawdown brake</div>
     <div class="two">
@@ -969,11 +957,6 @@ function bindSettings(){
       persist(); render(); toast("Saved"); if(secChanged && sec) doUpdateRate(); return;
     } else if(name==="accounts"){
       st.useExBal=$("s-useex").checked; st.autoLog=$("s-autolog").checked; if(st.autoLog) setTimeout(()=>syncAccounts().then(()=>render()),100);
-    } else if(name==="leverage"){
-      const lev=n("s-lev"), mmr=n("s-mmr");
-      if(!(lev>=1 && lev<=200)) return fail("Leverage must be between 1 and 200.");
-      if(!(mmr>=0 && mmr<50)) return fail("Maintenance margin must be between 0 and 50%.");
-      st.leverage=lev; st.mmr=mmr;
     } else if(name==="brake"){
       const dd=n("s-dd"), mult=n("s-mult");
       if(!(dd>0 && dd<100)) return fail("Trigger must be between 0 and 100%.");
@@ -1059,6 +1042,7 @@ function newTradeSheet(pre){
       const j=JSON.parse(await privateGet("mexc","leverage:"+sp.b+"_"+sp.q));
       if(my!==levReq || ui.sheet.levEdited) return;
       const row=(j.data||[]).find(x=>x.positionType===(want==="Short"?2:1)) || (j.data||[])[0];
+      if(row && num(row.mmr)>0) ui.sheet.mmr = num(row.mmr)*100;
       if(row && num(row.leverage)>0){ $("n-lev").value=num(row.leverage); src.textContent=`Your MEXC setting for ${pair}`; upd(); } else src.textContent="";
     }catch(e){}
   }
@@ -1109,7 +1093,7 @@ function updatePreview(c){
   $("f-sl").classList.toggle("bad", v.err.includes("stop")&&$("n-sl").value!=="");
   if(v.err){ box.innerHTML=`<div class="label">Position</div><div class="note" style="margin-top:8px">Enter entry and stop loss to size the position.</div>`; return; }
   const dist=Math.abs(v.entry-v.sl), size=v.risk/dist, value=size*v.entry, lev=c.bal>0? value/c.bal : 0;
-  const L=levInfo(v.entry,v.sl,v.dir,value,v.lev,S.settings.mmr), fut=ui.sheet.market!=="spot";
+  const L=levInfo(v.entry,v.sl,v.dir,value,v.lev,ui.sheet.mmr ?? S.settings.mmr), fut=ui.sheet.market!=="spot";
   const bal=(c.exBal>0?c.exBal:c.bal);
   box.innerHTML=`<div class="label">Position</div>
     <div class="kv" style="margin-top:6px"><span class="k">Size</span><span class="v">${units(size)} units</span></div>
@@ -1131,7 +1115,7 @@ function saveNew(){
   const bal=compute(S.settings,S.trades);
   const sp=splitPair($("n-pair").value); const pair=sp? sp.b+sp.q : "—";
   S.settings.exchange=ui.sheet.ex; S.settings.market=ui.sheet.market; if(ui.sheet.market!=="spot") S.settings.leverage=v.lev;
-  S.trades.push({id:uid(), created:Date.now(), date:$("n-date").value||todayStr(), pair, ex:ui.sheet.ex, market:ui.sheet.market, lev:v.lev, dir:v.dir, entry:v.entry, sl:v.sl,
+  S.trades.push({id:uid(), created:Date.now(), date:$("n-date").value||todayStr(), pair, ex:ui.sheet.ex, market:ui.sheet.market, lev:v.lev, mmr:ui.sheet.mmr, dir:v.dir, entry:v.entry, sl:v.sl,
     riskPct: bal.bal>0? +(v.risk/(S.settings.mode==="flat"?bal.cap:bal.bal)*100).toFixed(3) : 0, riskUsd:+v.risk.toFixed(2),
     outcome:null, manualR:null, fees:0, note:($("n-note").value||"").trim(), closedAt:null, posKey:ui.sheet.posKey||null});
   persist(); ui.tab="trades"; ui.filter="all"; closeSheet(); toast("Trade saved");
@@ -1151,7 +1135,9 @@ function tradeSheet(id){
     ${t.pnlUsd!=null?`<div class="kv"><span class="k">Closed at · MEXC P&amp;L</span><span class="v ${cls(t.pnlUsd)}">${t.exitPrice?price(t.exitPrice)+" · ":""}${smoney(t.pnlUsd)} ${esc(st.currency)}</span></div>`:""}
     <div class="kv"><span class="k">Risk</span><span class="v">${t.riskUsd>0?money(t.riskUsd):"unknown (no stop)"} ${esc(st.currency)}${hasSec()?`<br><span style="font-size:12.5px;color:var(--ink-3)">${secTxt(t.riskUsd)}</span>`:""}</span></div>
     <div class="kv"><span class="k">Size</span><span class="v">${units(size)} units</span></div>
-    ${t.lev>1 && t.sl?(()=>{ const L=levInfo(t.entry,t.sl,t.dir,size*t.entry,t.lev,st.mmr); return `<div class="kv"><span class="k">Leverage · margin</span><span class="v">${L.lev}x · ${money(L.margin)}</span></div>
+    ${t.liq ? (()=>{ const first = t.sl && (t.dir==="Short" ? t.liq<=t.sl : t.liq>=t.sl); return `<div class="kv"><span class="k">Leverage · margin</span><span class="v">${t.lev||"—"}x${t.margin?" · "+money(t.margin):""}</span></div>
+    <div class="kv"><span class="k">Liquidation (MEXC)</span><span class="v ${first?"down":""}">${price(t.liq)}${first?"<br><span style='font-size:12px'>before your stop</span>":""}</span></div>`; })()
+    : t.lev>1 && t.sl?(()=>{ const L=levInfo(t.entry,t.sl,t.dir,size*t.entry,t.lev,t.mmr??st.mmr); return `<div class="kv"><span class="k">Leverage · margin</span><span class="v">${L.lev}x · ${money(L.margin)}</span></div>
     <div class="kv"><span class="k">Liquidation ≈</span><span class="v ${L.liqFirst?"down":""}">${price(L.liq)}${L.liqFirst?"<br><span style='font-size:12px'>before your stop</span>":""}</span></div>`; })():""}
     ${t.tpPrices&&t.tpPrices.length ? `<div class="tplist">${t.tpPrices.map((p,i)=>`<div><span class="label">TP${i+1}${t.tpHits>i?" ✓":""}</span><span class="num">${price(p)}</span></div>`).join("")}</div>`
       : t.sl ? `<div class="tplist">${st.tps.map((x,i)=>`<div><span class="label">TP${i+1}</span><span class="num">${price(tpPrice(t.entry,t.sl,t.dir,x.r))}</span></div>`).join("")}</div>` : ""}
