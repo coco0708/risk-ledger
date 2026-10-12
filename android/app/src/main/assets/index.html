@@ -93,6 +93,9 @@ header.top{display:flex;align-items:center;justify-content:space-between;padding
 .btn.ghost{background:var(--line);color:var(--ink)}
 .btn.danger{background:var(--down-soft);color:var(--down)}
 .btn.sm{width:auto;padding:8px 12px;font-size:13.5px;border-radius:10px}
+.caprow{align-items:center}
+.caprow .v{display:flex;align-items:center;gap:12px}
+.caprow .btn{font-family:var(--f-ui)}
 .fab{position:fixed;right:max(16px,calc(50% - 244px));bottom:calc(80px + env(safe-area-inset-bottom,0px));border:0;border-radius:16px;background:var(--accent);color:var(--surface);font-weight:700;padding:15px 20px;font-size:15px;box-shadow:0 6px 20px rgba(10,60,40,.28);cursor:pointer;z-index:5}
 button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 /* tabs */
@@ -796,7 +799,7 @@ function viewDash(c){
         <div class="kv"><span class="k">Open P&amp;L</span><span class="v num ${cls(u)}">${smoney(u)}</span></div>
         <div class="kv"><span class="k">Open positions</span><span class="v num">${n}</span></div>
         ${closedRow}
-        <div class="kv"><span class="k">Starting capital</span><span class="v num">${sc?`${money(sc.amt)}<br><span style="font-size:12px;color:var(--ink-3);font-family:var(--f-ui)">${capDate(sc)} · <button class="linkbtn" style="font-size:12px" data-act="editCap">Change</button></span>`:`<button class="linkbtn" data-act="editCap">Set</button>`}</span></div></div>`; })()}
+        ${capRow("Starting capital")}</div>`; })()}
     <div class="spark" id="spark" aria-label="Equity curve"></div>
     ${exAll!=null&&accounts()[tradeEx()]?`<span class="hint" style="font-size:12.5px;color:var(--ink-3);padding-bottom:8px">${tradeEx()==="binance"?"USDT-M futures":"USDT futures"}, including open P&amp;L · updated ${new Date(accounts()[tradeEx()].at).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"})}</span>`:""}
   </section>
@@ -952,7 +955,7 @@ function viewSettings(){
       <div class="field"><label for="s-risk">Risk per trade (%)</label><input id="s-risk" class="num" inputmode="decimal" value="${st.riskPct}"></div>
       <div class="field"><label for="s-currency">Currency</label><input id="s-currency" value="${esc(st.currency)}"></div>
     </div>
-    <div class="kv"><span class="k">Starting capital · ${exName()}</span><span class="v num">${startCap()?`${money(startCap().amt)}<br><span style="font-size:12px;color:var(--ink-3);font-family:var(--f-ui)">${capDate(startCap())}</span>`:"Not set"} <button class="linkbtn" data-act="editCap">${startCap()?"Change":"Set"}</button></span></div>
+    ${capRow("Starting capital · "+exName())}
     <span class="hint" style="font-size:12.5px;color:var(--ink-3)">${connectedEx().length?`Each trade risks this % of your ${exName()} futures balance at that moment (now ${money(exTotal())} ${esc(st.currency)}), so risk grows as you win and shrinks as you lose.`:`Connect your trading exchange below. Each trade then risks this % of its futures balance at that moment.`}</span>
     <div class="savebar"><span class="hint" data-dirty hidden>Unsaved changes</span><div class="err" data-saveerr hidden></div><button class="btn" data-save="account" disabled>Save</button></div>
   </section>
@@ -1100,6 +1103,9 @@ async function exLeverage(ex, sp, dir){
 // Starting capital, recorded per exchange: profit is measured from it.
 const startCap = ex => (S.settings.startCap||{})[ex||tradeEx()] || null;
 const capDate = sc => new Date(sc.at).toLocaleDateString([], {month:"short", day:"numeric", year:"numeric"});
+function capRow(label){ const sc=startCap();
+  return `<div class="kv caprow"><span class="k">${esc(label)}<br><span style="font-size:12px;color:var(--ink-3)">${sc?capDate(sc):"Not set"}</span></span>
+    <span class="v num">${sc?money(sc.amt):""}<button class="btn sm" data-act="editCap">${sc?"Change":"Set"}</button></span></div>`; }
 async function capitalPrompt(ex, then){
   const name=EX[ex].name, prev=startCap(ex), has=keyInfo(ex);
   ui.sheet={kind:"cap", float:true, ex, then};
@@ -1111,7 +1117,7 @@ async function capitalPrompt(ex, then){
     <span class="hint" style="font-size:12.5px;color:var(--ink-3)">Your profit or loss on ${name} is measured from this amount. It's recorded with today's date.</span>
     <div id="cap-err" class="err" hidden></div>
     <button class="btn" data-act="capSave">${then?"Record and switch":"Record"}</button>
-    ${then?`<button class="btn ghost" data-act="capSkip">Switch without recording</button>`:""}
+    ${then?`<button class="btn danger" data-act="capSkip">Switch without recording</button>`:""}
   </div>`);
   if(!has) return;
   try{
