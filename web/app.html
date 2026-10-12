@@ -86,6 +86,7 @@ header.top{display:flex;align-items:center;justify-content:space-between;padding
 .btn{border:0;border-radius:12px;padding:13px 16px;font-weight:600;font-size:15px;cursor:pointer;background:var(--accent);color:var(--surface);width:100%}
 .btn.ghost{background:var(--line);color:var(--ink)}
 .btn.danger{background:var(--down-soft);color:var(--down)}
+.btn.danger.solid{background:var(--down);color:var(--surface)}
 .btn.sm{width:auto;padding:8px 12px;font-size:13.5px;border-radius:10px}
 .caprow{align-items:center}
 .caprow .v{display:flex;align-items:center;gap:12px}
@@ -770,7 +771,7 @@ function viewDash(c){
   const st=S.settings, cur=esc(st.currency);
   const exAll=exTotal(), shown = exAll!=null ? exAll : c.bal; // connected: the active exchange's futures balance
   const net=c.bal-c.cap; // profit or loss from the trades in the log
-  const sc=startCap(), since = sc && exAll!=null ? shown-sc.amt : null;
+  const sc=startCap(), since = sc && exAll!=null ? (Math.abs(shown-sc.amt)<0.005 ? 0 : shown-sc.amt) : null;
   const f=c.funnel, be=c.beRate;
   const tp1=f[0].rate;
   let verdict = `<span class="chip mute">Log a few trades to see your edge</span>`;
@@ -949,7 +950,7 @@ function viewSettings(){
       <div class="field"><label for="s-risk">Risk per trade (%)</label><input id="s-risk" class="num" inputmode="decimal" value="${st.riskPct}"></div>
       <div class="field"><label for="s-currency">Currency</label><input id="s-currency" value="${esc(st.currency)}"></div>
     </div>
-    ${capRow("Starting capital · "+exName())}
+    ${capRow("Starting capital · "+exName(), true)}
     <span class="hint" style="font-size:12.5px;color:var(--ink-3)">${connectedEx().length?`Each trade risks this % of your ${exName()} futures balance at that moment (now ${money(exTotal())} ${esc(st.currency)}), so risk grows as you win and shrinks as you lose.`:`Connect your trading exchange below. Each trade then risks this % of its futures balance at that moment.`}</span>
     <div class="savebar"><span class="hint" data-dirty hidden>Unsaved changes</span><div class="err" data-saveerr hidden></div><button class="btn" data-save="account" disabled>Save</button></div>
   </section>
@@ -1097,9 +1098,9 @@ async function exLeverage(ex, sp, dir){
 // Starting capital, recorded per exchange: profit is measured from it.
 const startCap = ex => (S.settings.startCap||{})[ex||tradeEx()] || null;
 const capDate = sc => new Date(sc.at).toLocaleDateString([], {month:"short", day:"numeric", year:"numeric"});
-function capRow(label){ const sc=startCap();
+function capRow(label, editable){ const sc=startCap();
   return `<div class="kv caprow"><span class="k">${esc(label)}<br><span style="font-size:12px;color:var(--ink-3)">${sc?capDate(sc):"Not set"}</span></span>
-    <span class="v num">${sc?money(sc.amt):""}<button class="btn sm" data-act="editCap">${sc?"Change":"Set"}</button></span></div>`; }
+    <span class="v num">${sc?money(sc.amt):(editable?"":"—")}${editable?`<button class="btn sm" data-act="editCap">${sc?"Change":"Set"}</button>`:""}</span></div>`; }
 async function capitalPrompt(ex, then){
   const name=EX[ex].name, prev=startCap(ex), has=keyInfo(ex);
   ui.sheet={kind:"cap", float:true, ex, then};
@@ -1111,7 +1112,7 @@ async function capitalPrompt(ex, then){
     <span class="hint" style="font-size:12.5px;color:var(--ink-3)">Your profit or loss on ${name} is measured from this amount. It's recorded with today's date.</span>
     <div id="cap-err" class="err" hidden></div>
     <button class="btn" data-act="capSave">${then?"Record and switch":"Record"}</button>
-    ${then?`<button class="btn danger" data-act="capSkip">Switch without recording</button>`:""}
+    ${then?`<button class="btn danger solid" data-act="capSkip">Switch without recording</button>`:""}
   </div>`);
   if(!has) return;
   try{
