@@ -472,8 +472,8 @@ function attachOrders(positions, orders){
 const accounts = () => (typeof S!=="undefined" && S && S.accounts) || {};
 const futuresOnly = () => true; // futures wallet only
 const acctTotal = a => a.futEq||0;
-// Every connected exchange: their futures balances add up to your balance, and risk is sized on the total.
-const connectedEx = () => ACCT_EX.filter(k=>accounts()[k] && keyInfo(k));
+// The active (trading) exchange, when connected: its futures balance is your balance, and risk is sized on it.
+const connectedEx = () => [tradeEx()].filter(k=>accounts()[k] && keyInfo(k));
 // Futures wallet balance (excludes open-position P&L), used as starting capital
 function futWalletTotal(){ const a=accounts(), l=connectedEx(); return l.length ? l.reduce((s,k)=>s+(a[k].futWallet!=null? a[k].futWallet : (a[k].futEq||0)),0) : null; }
 function setCapitalFromExchange(){
@@ -494,9 +494,10 @@ function exRisk(k){
   return { bal, peak, dd, brake, pct:pctUsed, risk: Math.max(bal,0)*pctUsed/100, open:open.length, openRisk: open.reduce((s,t)=>s+(Number(t.riskUsd)||0),0), positions:(a.positions||[]).length };
 }
 function updatePeaks(){ S.exPeak=S.exPeak||{}; connectedEx().forEach(k=>{ const b=acctTotal(accounts()[k]); if(b>(S.exPeak[k]||0)) S.exPeak[k]=b; }); }
-// Balances are read from every connected exchange. Positions are logged from the trading exchange,
-// plus any exchange that still has open trades in the log (so they close properly after a switch).
-function syncList(){ return ACCT_EX.filter(k=>keyInfo(k)); }
+// Read the trading exchange, plus any exchange that still has open trades in the log (so they close properly after a switch).
+function syncList(){ const l=new Set([tradeEx()]);
+  if(S.settings.autoLog!==false) S.trades.forEach(t=>{ if(!t.outcome && t.auto && t.ex) l.add(t.ex); });
+  return [...l].filter(k=>ACCT_EX.includes(k) && keyInfo(k)); }
 const mirrorsEx = ex => ex===tradeEx() || S.trades.some(t=>!t.outcome && t.auto && t.ex===ex);
 async function syncAccounts(){
   S.accounts = S.accounts || {}; const res=[];
@@ -682,11 +683,12 @@ function compute(st, trades){
     if(sgn>0){wins++; gW+=Math.max(R,0); sumWinR+=R; streak=0;} else if(sgn<0){losses++; gL+=-Math.min(R,0); sumLossR+=R; streak++; maxStreak=Math.max(maxStreak,streak);} else be++;
     curve.push({bal, label:pairLabel(t.pair)+" · "+t.outcome});
   }
-  const dd = peak>0 ? Math.max(0,1-bal/peak) : 0;
+  // Connected: risk is a % of the active exchange's futures balance, and the brake watches that balance's own peak.
+  const exBal = exTotal(), x = exBal!=null && typeof S!=="undefined" && S ? exRisk(tradeEx()) : null;
+  const dd = x ? x.dd : (peak>0 ? Math.max(0,1-bal/peak) : 0);
   const brake = dd >= st.brakeDD/100;
   const nextPct = st.riskPct * (brake ? st.brakeMult/100 : 1);
-  const exBal = st.useExBal && st.mode!=="flat" ? exTotal() : null;
-  const base = st.mode==="flat" ? cap : (exBal>0 ? exBal : Math.max(bal,0));
+  const base = x ? Math.max(exBal,0) : Math.max(bal,0);
   const nextUsd = base*nextPct/100;
   const open = trades.filter(t=>!t.outcome);
   const openRisk = open.reduce((s,t)=>s+(Number(t.riskUsd)||0),0);
@@ -768,8 +770,8 @@ function sampleBanner(){
 
 function viewDash(c){
   const st=S.settings, cur=esc(st.currency);
-  const exAll=exTotal(), shown = exAll!=null ? exAll : c.bal; // connected: the real total across exchanges
-  const net=shown-c.cap, ret=c.cap? net/c.cap : 0;
+  const exAll=exTotal(), shown = exAll!=null ? exAll : c.bal; // connected: the active exchange's futures balance
+  const net=c.bal-c.cap; // profit or loss from the trades in the log
   const f=c.funnel, be=c.beRate;
   const tp1=f[0].rate;
   let verdict = `<span class="chip mute">Log a few trades to see your edge</span>`;
@@ -777,9 +779,9 @@ function viewDash(c){
   const pf = c.pf==null? "—" : c.pf===Infinity? "∞" : c.pf.toFixed(2);
   return `${header()}${sampleBanner()}
   <section class="card hero" aria-label="Balance">
-    <div class="label">Balance${exAll!=null?` · ${connectedEx().map(k=>EX[k].name).join(" + ")}`:""}</div>
+    <div class="label">Balance${exAll!=null?` · ${exName()} futures`:""}</div>
     <div class="bal num">${money(shown)}<small>${cur}</small></div>
-    <div class="delta num ${cls(net)}">${smoney(net)} (${ret>=0?"+":""}${(ret*100).toFixed(1)}%) <span style="color:var(--ink-3);font-family:var(--f-ui);font-weight:500">since start</span></div>
+    <div class="delta num ${cls(net)}">${smoney(net)} <span style="color:var(--ink-3);font-family:var(--f-ui);font-weight:500">from ${c.n} closed trade${c.n===1?"":"s"}</span></div>
     ${hasSec()?`<div class="sec num">${secTxt(shown)} · 1 ${cur} = ${fmtSec(1)}${st.rateFrom?` <span style="font-family:var(--f-ui)">(${esc(st.rateFrom)})</span>`:""}</div>`
       : st.secondCur && st.currency==="USDT" ? `<div class="sec" style="font-family:var(--f-ui)">${esc(st.secondCur)} amounts appear once ${exName()}'s rate loads.${st.rateErr?` ${esc(st.rateErr)}`:""} <button class="linkbtn" data-act="retryRate">Try again</button></div>`:""}
     <div class="spark" id="spark" aria-label="Equity curve"></div>
@@ -788,7 +790,7 @@ function viewDash(c){
   ${exAcctCard()}
   <section class="card next">
     <div class="sechead"><div class="label">Next trade risk</div>${c.brake?`<span class="chip warn">Brake on · down ${pct(c.dd)}</span>`:`<span class="chip up">Brake off</span>`}</div>
-    <div class="big"><span class="num">${money(c.nextUsd)}</span><span style="color:var(--ink-2)">${cur} · ${c.nextPct.toFixed(2).replace(/\.?0+$/,"")}% of ${st.mode==="flat"?"starting capital":c.exBal>0?(connectedEx().length>1?"all exchanges' futures":"futures balance"):"balance"}</span></div>
+    <div class="big"><span class="num">${money(c.nextUsd)}</span><span style="color:var(--ink-2)">${cur} · ${c.nextPct.toFixed(2).replace(/\.?0+$/,"")}% of ${c.exBal!=null?exName()+" futures":"balance"}</span></div>
     ${hasSec()?`<div class="sec num" style="margin-top:-6px">${secTxt(+c.nextUsd.toFixed(2))}</div>`:""}
     <div>
       <div class="kv"><span class="k">Drawdown from peak</span><span class="v num ${c.dd>0?"down":""}">${pct(c.dd)}</span></div>
@@ -946,13 +948,10 @@ function viewSettings(){
   <section class="card form" data-card="account">
     <div class="label">Account</div>
     <div class="two">
-      <div class="field"><label for="s-capital">Starting capital</label><input id="s-capital" class="num" inputmode="decimal" value="${st.capital}"></div>
+      <div class="field"><label for="s-risk">Risk per trade (%)</label><input id="s-risk" class="num" inputmode="decimal" value="${st.riskPct}"></div>
       <div class="field"><label for="s-currency">Currency</label><input id="s-currency" value="${esc(st.currency)}"></div>
     </div>
-    <div class="field"><label for="s-risk">Risk per trade (% of current balance)</label><input id="s-risk" class="num" inputmode="decimal" value="${st.riskPct}">
-      <span class="hint">Compounding: each trade risks this % of your balance at that moment, so risk grows as you win and shrinks as you lose.</span></div>
-    ${connectedEx().length?`<button class="btn ghost" data-act="capFromEx">Use my futures balance: ${money(futWalletTotal()||0)} ${esc(st.currency)}</button>`:""}
-    ${st.capitalFrom?`<span class="hint" style="font-size:12.5px;color:var(--ink-3)">Starting capital taken from ${esc(st.capitalFrom)}. Open-position P&amp;L isn't included.</span>`:""}
+    <span class="hint" style="font-size:12.5px;color:var(--ink-3)">${connectedEx().length?`Each trade risks this % of your ${exName()} futures balance at that moment (now ${money(exTotal())} ${esc(st.currency)}), so risk grows as you win and shrinks as you lose.`:`Connect your trading exchange below. Each trade then risks this % of its futures balance at that moment.`}</span>
     <div class="savebar"><span class="hint" data-dirty hidden>Unsaved changes</span><div class="err" data-saveerr hidden></div><button class="btn" data-save="account" disabled>Save</button></div>
   </section>
 
@@ -978,11 +977,10 @@ function viewSettings(){
     <div class="label">Exchange accounts</div>
     <div class="field"><label>Trading exchange</label><div class="seg" id="s-tradeex">${ACCT_EX.map(k=>`<button data-tex="${k}" aria-pressed="${tradeEx()===k}">${EX[k].name}</button>`).join("")}</div>
       <span class="hint" id="s-texhint" style="font-size:12.5px;color:var(--ink-3)"></span></div>
-    ${ACCT_EX.map(k=>{ const ki=keyInfo(k), a=accounts()[k]; return `<div class="acct"><div><div class="n">${EX[k].name}${k===tradeEx()?` <span class="chip up" style="font-size:11px;padding:2px 8px;vertical-align:2px">Trading</span>`:""}</div><div class="s">${ki?`Connected · key ${esc(ki)}${a?` · ${money(acctTotal(a))} ${esc(st.currency)}`:""}`:"Not connected"}</div></div>
+    ${ACCT_EX.map(k=>{ const ki=keyInfo(k), a=accounts()[k]; return `<div class="acct"><div><div class="n">${EX[k].name}${k===tradeEx()?` <span class="chip up" style="font-size:11px;padding:2px 8px;vertical-align:2px">Trading</span>`:""}</div><div class="s">${ki?`Connected · key ${esc(ki)}${a&&k===tradeEx()?` · ${money(acctTotal(a))} ${esc(st.currency)}`:""}`:"Not connected"}</div></div>
       ${ki?`<button class="btn ghost sm" data-act="disconnect" data-ex="${k}">Disconnect</button>`:`<button class="btn sm" data-act="connect" data-ex="${k}">Connect</button>`}</div>`; }).join("")}
     <div class="field" hidden><label>Count as exchange balance</label><div class="seg" id="s-scope"><button data-scope="futures" aria-pressed="${st.balScope!=="all"}">Futures only</button><button data-scope="all" aria-pressed="${st.balScope==="all"}">All wallets</button></div></div>
     <label class="toggle" for="s-autolog"><span>Log <span data-exname>${exName()}</span> positions automatically<br><span class="hint" style="font-size:12.5px;color:var(--ink-3)">Every futures position you open on <span data-exname>${exName()}</span> is added here, kept up to date, and closed with the exchange's real profit or loss.</span></span><input type="checkbox" id="s-autolog" ${st.autoLog!==false?"checked":""}></label>
-    <label class="toggle" for="s-useex"><span>Size trades from exchange balance<br><span class="hint" style="font-size:12.5px;color:var(--ink-3)">Risk is worked out from your real futures balance on all connected exchanges, added up, instead of the log's balance.</span></span><input type="checkbox" id="s-useex" ${st.useExBal?"checked":""}></label>
     <span class="hint" style="font-size:12.5px;color:var(--ink-3)">${Native?"Read-only. Keys are encrypted on this phone and never included in backups.":"Exchange accounts work in the Android app."}</span>
     <div class="savebar"><span class="hint" data-dirty hidden>Unsaved changes</span><div class="err" data-saveerr hidden></div><button class="btn" data-save="accounts" disabled>Save</button></div>
   </section>
@@ -1031,7 +1029,7 @@ function bindSettings(){
   segPick("s-tradeex","data-tex");
   const texHint=()=>{ const b=$("s-tradeex").querySelector('[aria-pressed="true"]'), k=b? b.dataset.tex : tradeEx(), n=EX[k].name;
     document.querySelectorAll("[data-exname]").forEach(el=>el.textContent=n);
-    $("s-texhint").innerHTML = keyInfo(k) ? `Positions, leverage, prices and the USDT rate come from ${n}. Your balance adds up every connected exchange.` : `<span style="color:var(--warn)">${n} isn't connected yet. Connect it below so its positions are logged.</span>`; };
+    $("s-texhint").innerHTML = keyInfo(k) ? `Your balance, risk, positions, leverage, prices and USDT rate come from ${n} futures.` : `<span style="color:var(--warn)">${n} isn't connected yet. Connect it below so its positions are logged.</span>`; };
   $("s-tradeex").addEventListener("click", texHint); texHint();
   // live check of the TP total while typing
   const tpCheck=()=>{ const sum=[0,1,2,3].reduce((a,i)=>a+(parseFloat($("s-tpp"+i).value)||0),0); const w=$("tpwarn"); w.hidden=Math.round(sum)===100; w.textContent=`Close % adds up to ${sum}%. It should be 100%.`; return sum; };
@@ -1042,12 +1040,10 @@ function bindSettings(){
     const n=id=>parseFloat($(id).value);
     const name=btn.dataset.save;
     if(name==="account"){
-      const cap=n("s-capital"), risk=n("s-risk"), cur=($("s-currency").value||"USDT").trim().toUpperCase().slice(0,8);
-      if(!(cap>0)) return fail("Starting capital must be more than 0.");
+      const risk=n("s-risk"), cur=($("s-currency").value||"USDT").trim().toUpperCase().slice(0,8);
       if(!(risk>0 && risk<=100)) return fail("Risk per trade must be between 0 and 100%.");
-      if(cap!==st.capital) st.capitalFrom=null;
       if(cur!==st.currency){ st.secondRate=null; st.rateAt=null; }
-      st.capital=cap; st.riskPct=risk; st.currency=cur;
+      st.riskPct=risk; st.currency=cur;
     } else if(name==="appearance"){
       const b=$("s-theme").querySelector('[aria-pressed="true"]'); st.theme=b? b.dataset.themeSet : "system"; applyTheme();
     } else if(name==="second"){
@@ -1060,7 +1056,7 @@ function bindSettings(){
       persist(); render(); toast("Saved"); if(secChanged && sec) doUpdateRate(); return;
     } else if(name==="accounts"){
       const b=$("s-tradeex").querySelector('[aria-pressed="true"]'), tex=b? b.dataset.tex : tradeEx(), switched = tex!==tradeEx();
-      st.useExBal=$("s-useex").checked; st.autoLog=$("s-autolog").checked; st.tradeEx=tex;
+      st.autoLog=$("s-autolog").checked; st.tradeEx=tex;
       if(switched){ ui.mk=null; if(!/^Typed/.test(st.rateFrom||"")){ st.secondRate=null; st.rateAt=null; } }
       if(st.autoLog || switched) setTimeout(()=>syncAccounts().then(()=>render()),100);
       if(switched && st.secondCur && !st.secondRate) setTimeout(loadRate,200);
@@ -1129,7 +1125,7 @@ function newTradeSheet(pre){
         <div class="num" id="n-levro" style="font-size:18px;font-weight:500;padding:11px 0" ${calc && pre.lev ? "" : "hidden"}>${pre.lev?pre.lev+"x":""}</div>
         <input id="n-lev" class="num" inputmode="decimal" value="${pre.lev||S.settings.leverage||10}" ${calc?"hidden":""}><span class="hint" id="n-levsrc" style="font-size:12px;color:var(--ink-3)"></span></div>
     </div>
-    ${pre.posKey?`<div class="warnbox">Filled in from your open ${EX[pre.ex].name} position${pre.sl?`: risk is what you'd lose if the stop at ${price(pre.sl)} is hit (${(pre.risk/(c.exBal>0?c.exBal:c.bal)*100).toFixed(2)}% of balance)`:`. It has no stop loss on the exchange, so enter the one you're using`}.</div>`:""}
+    ${pre.posKey?`<div class="warnbox">Filled in from your open ${EX[pre.ex].name} position${pre.sl?`: risk is what you'd lose if the stop at ${price(pre.sl)} is hit (${(pre.risk/(c.exBal>0?c.exBal:Math.max(c.bal,1e-9))*100).toFixed(2)}% of balance)`:`. It has no stop loss on the exchange, so enter the one you're using`}.</div>`:""}
     <div class="field" style="margin-top:-6px" ${pre.risk>0?"hidden":""}><span class="hint" id="n-riskhint">${c.nextPct.toFixed(2).replace(/\.?0+$/,"")}% of ${S.settings.mode==="flat"?"starting capital":"balance"}${c.brake?" · drawdown brake on":""}${hasSec()?" · "+secTxt(+c.nextUsd.toFixed(2)):""}. You can change it.</span></div>
     <div class="card preview" id="n-prev"></div>
     <div class="field" ${calc?"hidden":""}><label for="n-note">Note (optional)</label><input id="n-note" placeholder="Setup, timeframe, reason" value="${pre.tps&&pre.tps.length? esc("Exchange TP "+pre.tps.map(price).join(" / ")) : ""}"></div>
@@ -1139,7 +1135,7 @@ function newTradeSheet(pre){
   const upd=()=>updatePreview(c);
   ["n-entry","n-sl","n-risk","n-lev"].forEach(id=>$(id).addEventListener("input",upd));
   const exHint=()=>{ const h=$("n-riskhint"); if(!h) return;
-    h.textContent = `${c.nextPct.toFixed(2).replace(/\.?0+$/,"")}% of ${c.exBal>0?`your futures balance on ${connectedEx().map(k=>EX[k].name).join(" + ")} (${money(c.exBal)})`:"balance"}${c.brake?" · drawdown brake on":""}${hasSec()?" · "+secTxt(+c.nextUsd.toFixed(2)):""}. You can change it.`; };
+    h.textContent = `${c.nextPct.toFixed(2).replace(/\.?0+$/,"")}% of ${c.exBal!=null?`your ${exName()} futures balance (${money(c.exBal)})`:"balance"}${c.brake?" · drawdown brake on":""}${hasSec()?" · "+secTxt(+c.nextUsd.toFixed(2)):""}. You can change it.`; };
   if(!(pre.risk>0)) exHint();
   $("n-risk").addEventListener("input",()=>{ ui.sheet.riskEdited=true; });
   $("n-ex").addEventListener("change",e=>{ ui.sheet.ex=e.target.value;
@@ -1340,7 +1336,7 @@ async function saveKeyFlow(){
     persist();
     const fresh = S.sample || !S.trades.length;
     if(fresh && adopt && setCapitalFromExchange()){ if(S.sample){ S.trades=[]; S.sample=false; persist(); } }
-    closeSheet(); toast(fresh && adopt && S.settings.capitalFrom ? `${EX[ex].name} connected · starting capital ${money(S.settings.capital)} ${S.settings.currency}` : `${EX[ex].name} connected · futures ${money(a.futEq||0)} ${S.settings.currency}${adopt?"":" · pick it as trading exchange to use it"}`);
+    closeSheet(); toast(`${EX[ex].name} connected · futures ${money(a.futEq||0)} ${S.settings.currency}${adopt?"":" · pick it as trading exchange to use it"}`);
     if(adopt){ syncAccounts().then(()=>render()); if(S.settings.secondCur && !S.settings.secondRate) loadRate(); } }
   catch(e){ Native.removeKeys(ex); btn.disabled=false; show(apiErr(e)); }
 }
