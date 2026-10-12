@@ -773,15 +773,17 @@ function viewDash(c){
   const pf = c.pf==null? "—" : c.pf===Infinity? "∞" : c.pf.toFixed(2);
   return `${header()}${sampleBanner()}
   <section class="card hero" aria-label="Balance">
-    <div class="label">Balance${exAll!=null?` · ${exName()} futures`:""}</div>
+    <div class="sechead"><div class="label">Balance${exAll!=null?` · ${exName()} futures`:""}</div>${exAll!=null?`<button class="linkbtn" data-act="syncAcct">Refresh</button>`:""}</div>
     <div class="bal num">${money(shown)}<small>${cur}</small></div>
+    ${(()=>{ const a=exAll!=null? accounts()[tradeEx()] : null; if(!a) return "";
+      const w=a.futWallet??a.futEq??0, u=(a.futEq||0)-w, n=(a.positions||[]).length;
+      return `<div class="sec num">wallet ${money(w)} · open P&amp;L <span class="${cls(u)}">${smoney(u)}</span> · ${n} open</div>`; })()}
     <div class="delta num ${cls(net)}">${smoney(net)} <span style="color:var(--ink-3);font-family:var(--f-ui);font-weight:500">from ${c.n} closed trade${c.n===1?"":"s"}</span></div>
     ${hasSec()?`<div class="sec num">${secTxt(shown)} · 1 ${cur} = ${fmtSec(1)}${st.rateFrom?` <span style="font-family:var(--f-ui)">(${esc(st.rateFrom)})</span>`:""}</div>`
       : st.secondCur && st.currency==="USDT" ? `<div class="sec" style="font-family:var(--f-ui)">${esc(st.secondCur)} amounts appear once ${exName()}'s rate loads.${st.rateErr?` ${esc(st.rateErr)}`:""} <button class="linkbtn" data-act="retryRate">Try again</button></div>`:""}
     <div class="spark" id="spark" aria-label="Equity curve"></div>
   </section>
 
-  ${exAcctCard()}
   <section class="card next">
     <div class="sechead"><div class="label">Next trade risk</div>${c.brake?`<span class="chip warn">Brake on · down ${pct(c.dd)}</span>`:`<span class="chip up">Brake off</span>`}</div>
     <div class="big"><span class="num">${money(c.nextUsd)}</span><span style="color:var(--ink-2)">${cur} · ${c.nextPct.toFixed(2).replace(/\.?0+$/,"")}% of ${c.exBal!=null?exName()+" futures":"balance"}</span></div>
@@ -814,18 +816,6 @@ function viewDash(c){
   </section>`;
 }
 
-function exAcctCard(){
-  const a=accounts(), list=connectedEx(); if(!list.length) return "";
-  const tot=list.reduce((s,k)=>s+acctTotal(a[k]),0), pos=list.reduce((s,k)=>s+(a[k].positions||[]).length,0);
-  const at=Math.max(...list.map(k=>a[k].at||0));
-  return `<section class="card next">
-    <div class="sechead"><div class="label">Futures balance${list.length>1?" · all exchanges":""}</div><button class="linkbtn" data-act="syncAcct">Refresh</button></div>
-    <div class="big"><span class="num">${money(tot)}</span><span style="color:var(--ink-2)">${esc(S.settings.currency)}${hasSec()?" · "+secTxt(tot):""}</span></div>
-    <div>${list.map(k=>`<div class="kv"><span class="k">${EX[k].name}${k===tradeEx()?` <span class="chip up" style="font-size:11px;padding:2px 8px">Trading</span>`:""}${(a[k].positions||[]).length?`<br><span style="font-size:12px;color:var(--ink-3)">${a[k].positions.length} open</span>`:""}</span><span class="v num">${money(acctTotal(a[k]))}<br><span style="font-size:12px;color:var(--ink-3)">${futuresOnly()?`wallet ${money(a[k].futWallet??a[k].futEq??0)} · open P&amp;L ${smoney((a[k].futEq||0)-(a[k].futWallet??a[k].futEq??0))}`:(a[k].wallets&&a[k].wallets.length? a[k].wallets : [{name:"Spot",usdt:a[k].spot||0},{name:"Futures",usdt:a[k].futEq||0}]).map(w=>`${esc(w.name)} ${money(w.usdt)}`).join(" · ")}</span></span></div>`).join("")}
-    <div class="kv"><span class="k">Open positions</span><span class="v num">${pos}</span></div></div>
-    <span class="hint" style="font-size:12.5px;color:var(--ink-3)">${futuresOnly()?"USDT-M futures, including open P&amp;L":"All coins in all wallets, valued in USDT"} · updated ${new Date(at).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"})}</span>
-  </section>`;
-}
 
 function drawSpark(c){
   const el=$("spark"); if(!el) return;
