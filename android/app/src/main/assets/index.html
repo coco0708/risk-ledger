@@ -651,6 +651,7 @@ function render(){
   const c = compute(S.settings, S.trades);
   document.querySelectorAll("nav.tabs button").forEach(b=>b.setAttribute("aria-selected", String(b.dataset.tab===ui.tab)));
   $("fab").hidden = ui.tab==="settings" || ui.tab==="markets";
+  $("fab").textContent = S.settings.autoLog!==false ? "Position size" : "+ New trade";
   $("view").innerHTML = ui.tab==="dash" ? viewDash(c) : ui.tab==="trades" ? viewTrades(c) : ui.tab==="markets" ? viewMarkets() : viewSettings(c);
   if(ui.tab==="markets") bindMarkets();
   if(ui.tab==="dash") drawSpark(c);
@@ -988,17 +989,19 @@ function newTradeSheet(pre){
   pre = pre && pre.pair ? pre : {};
   const c=compute(S.settings,S.trades);
   const st0=S.settings;
-  ui.sheet={kind:"new", posKey:pre.posKey||null, dir:pre.dir||"Long", ex:"mexc", market:"futures"};
-  openSheet(`<header><h2>New trade</h2><button class="x" data-act="close" aria-label="Close">×</button></header>
+  // With MEXC trades logged automatically, this sheet is a calculator: size the position before opening it on MEXC.
+  const calc = S.settings.autoLog!==false && !pre.posKey;
+  ui.sheet={kind:"new", calc, posKey:pre.posKey||null, dir:pre.dir||"Long", ex:"mexc", market:"futures"};
+  openSheet(`<header><h2>${calc?"Position calculator":"New trade"}</h2><button class="x" data-act="close" aria-label="Close">×</button></header>
   <form id="ntf" class="form" novalidate>
     <div class="note" style="margin:0;font-weight:600;color:var(--ink-2)">MEXC Futures</div>
     <div class="two" hidden>
       <div class="field"><label for="n-ex">Exchange</label><select id="n-ex">${EX_ORDER.map(k=>`<option value="${k}" ${ui.sheet.ex===k?"selected":""}>${EX[k].name}</option>`).join("")}</select></div>
       <div class="field"><label>Market</label><div class="seg" id="n-mkt"><button type="button" data-mkt="spot" aria-pressed="${ui.sheet.market==="spot"}">Spot</button><button type="button" data-mkt="futures" aria-pressed="${ui.sheet.market!=="spot"}">Futures</button></div></div>
     </div>
-    <div class="two">
+    <div class="${calc?"form":"two"}">
       <div class="field"><label for="n-pair">Pair</label><input id="n-pair" placeholder="Type e.g. SOL" value="${esc(pre.pair||"")}" autocapitalize="characters" autocomplete="off" spellcheck="false"></div>
-      <div class="field"><label for="n-date">Date</label><input id="n-date" type="date" value="${todayStr()}"></div>
+      <div class="field" ${calc?"hidden":""}><label for="n-date">Date</label><input id="n-date" type="date" value="${todayStr()}"></div>
     </div>
     <div class="list sugg" id="n-sugg" hidden></div>
     <div class="field"><label>Direction</label><div class="seg" id="n-dir"><button type="button" data-dir="Long" aria-pressed="${ui.sheet.dir!=="Short"}">Long</button><button type="button" data-dir="Short" aria-pressed="${ui.sheet.dir==="Short"}">Short</button></div></div>
@@ -1009,14 +1012,16 @@ function newTradeSheet(pre){
     <div id="n-livemsg" class="hint" style="font-size:12.5px;color:var(--ink-3);margin-top:-4px" hidden></div>
     <div class="two">
       <div class="field"><label for="n-risk">Risk (${esc(S.settings.currency)})</label><input id="n-risk" class="num" inputmode="decimal" value="${pre.risk>0? pre.risk.toFixed(2) : (exRisk(ui.sheet.ex)? exRisk(ui.sheet.ex).risk : c.nextUsd).toFixed(2)}"></div>
-      <div class="field" id="f-lev" ${ui.sheet.market==="spot"?"hidden":""}><label for="n-lev">Leverage (x)</label><input id="n-lev" class="num" inputmode="decimal" value="${pre.lev||S.settings.leverage||10}"><span class="hint" id="n-levsrc" style="font-size:12px;color:var(--ink-3)"></span></div>
+      <div class="field" id="f-lev" ${calc && !pre.lev ? "hidden" : ""}><label for="n-lev" id="n-levlbl">${calc?"MEXC leverage":"Leverage (x)"}</label>
+        <div class="num" id="n-levro" style="font-size:18px;font-weight:500;padding:11px 0" ${calc && pre.lev ? "" : "hidden"}>${pre.lev?pre.lev+"x":""}</div>
+        <input id="n-lev" class="num" inputmode="decimal" value="${pre.lev||S.settings.leverage||10}" ${calc?"hidden":""}><span class="hint" id="n-levsrc" style="font-size:12px;color:var(--ink-3)"></span></div>
     </div>
     ${pre.posKey?`<div class="warnbox">Filled in from your open ${EX[pre.ex].name} position${pre.sl?`: risk is what you'd lose if the stop at ${price(pre.sl)} is hit (${(pre.risk/(c.exBal>0?c.exBal:c.bal)*100).toFixed(2)}% of balance)`:`. It has no stop loss on the exchange, so enter the one you're using`}.</div>`:""}
     <div class="field" style="margin-top:-6px" ${pre.risk>0?"hidden":""}><span class="hint" id="n-riskhint">${c.nextPct.toFixed(2).replace(/\.?0+$/,"")}% of ${S.settings.mode==="flat"?"starting capital":"balance"}${c.brake?" · drawdown brake on":""}${hasSec()?" · "+secTxt(+c.nextUsd.toFixed(2)):""}. You can change it.</span></div>
     <div class="card preview" id="n-prev"></div>
-    <div class="field"><label for="n-note">Note (optional)</label><input id="n-note" placeholder="Setup, timeframe, reason" value="${pre.tps&&pre.tps.length? esc("Exchange TP "+pre.tps.map(price).join(" / ")) : ""}"></div>
+    <div class="field" ${calc?"hidden":""}><label for="n-note">Note (optional)</label><input id="n-note" placeholder="Setup, timeframe, reason" value="${pre.tps&&pre.tps.length? esc("Exchange TP "+pre.tps.map(price).join(" / ")) : ""}"></div>
     <div id="n-err" class="err" hidden></div>
-    <button class="btn" type="submit">Save open trade</button>
+    ${calc ? `<div class="note" style="margin:0">Open the trade on MEXC with this size and stop. It's added to your log automatically.</div>` : `<button class="btn" type="submit">Save open trade</button>`}
   </form>`);
   const upd=()=>updatePreview(c);
   ["n-entry","n-sl","n-risk","n-lev"].forEach(id=>$(id).addEventListener("input",upd));
@@ -1042,14 +1047,19 @@ function newTradeSheet(pre){
     const sp=splitPair($("n-pair").value), src=$("n-levsrc"); if(!sp || ui.sheet.levEdited || !src) return;
     const pair=sp.b+"/"+sp.q, want=ui.sheet.dir==="Short"?"Short":"Long", my=++levReq;
     const pos=((accounts().mexc||{}).positions||[]).find(p=>p.pair===pair && p.dir===want);
-    if(pos && pos.lev){ $("n-lev").value=pos.lev; src.textContent="From your open MEXC position"; upd(); return; }
-    if(!(Native && keyInfo("mexc"))) return;
+    const showLev=(v, note)=>{ $("f-lev").hidden=false; $("n-lev").value=v;
+      if(ui.sheet.calc){ $("n-levro").hidden=false; $("n-levro").textContent=v+"x"; $("n-lev").hidden=true; $("n-levlbl").textContent="MEXC leverage"; }
+      src.textContent=note; upd(); };
+    if(pos && pos.lev){ showLev(pos.lev, "From your open MEXC position"); return; }
+    if(!(Native && keyInfo("mexc"))){ if(ui.sheet.calc){ $("f-lev").hidden=false; $("n-lev").hidden=false; $("n-levlbl").textContent="Leverage you'll use"; } return; }
     try{
       const j=JSON.parse(await privateGet("mexc","leverage:"+sp.b+"_"+sp.q));
       if(my!==levReq || ui.sheet.levEdited) return;
       const row=(j.data||[]).find(x=>x.positionType===(want==="Short"?2:1)) || (j.data||[])[0];
       if(row && num(row.mmr)>0) ui.sheet.mmr = num(row.mmr)*100;
-      if(row && num(row.leverage)>0){ $("n-lev").value=num(row.leverage); src.textContent=`Your MEXC setting for ${pair}`; upd(); } else src.textContent="";
+      if(row && num(row.leverage)>0){ showLev(num(row.leverage), `Your MEXC setting for ${pair}`); }
+      else if(ui.sheet.calc){ $("f-lev").hidden=false; $("n-levro").hidden=true; $("n-lev").hidden=false; $("n-levlbl").textContent="Leverage you'll use"; src.textContent="Not set on MEXC for this pair yet."; }
+      else src.textContent="";
     }catch(e){}
   }
   $("n-pair").addEventListener("input",()=>{ clearTimeout(levTimer); levTimer=setTimeout(levFromMexc,600); });
@@ -1079,7 +1089,7 @@ function newTradeSheet(pre){
     levFromMexc(); upd(); });
   document.addEventListener("click",e=>{ if(!e.target.closest("#n-sugg") && e.target.id!=="n-pair" && sugg) sugg.hidden=true; });
   if(pre.lev) $("n-levsrc").textContent="From your open MEXC position"; else if($("n-pair").value) levFromMexc();
-  $("ntf").addEventListener("submit",e=>{ e.preventDefault(); saveNew(); });
+  $("ntf").addEventListener("submit",e=>{ e.preventDefault(); if(!ui.sheet.calc) saveNew(); });
   upd();
 }
 function readNew(){
