@@ -34,6 +34,20 @@ import java.util.Date;
 import java.util.HashMap;
 import java.util.Locale;
 import java.util.TimeZone;
+import java.util.List;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.concurrent.TimeUnit;
+import java.net.InetAddress;
+import java.net.UnknownHostException;
+import okhttp3.Dns;
+import okhttp3.HttpUrl;
+import okhttp3.MediaType;
+import okhttp3.OkHttpClient;
+import okhttp3.Request;
+import okhttp3.RequestBody;
+import okhttp3.Response;
+import okhttp3.dnsoverhttps.DnsOverHttps;
 import java.util.Map;
 import org.json.JSONObject;
 
@@ -102,36 +116,57 @@ public class MainActivity extends Activity {
     /** Result of an HTTP call: ok flag plus body (or error text). */
     static final class Res { boolean ok; String body; }
 
-    private static Res request(String method, String url, Map<String, String> headers, String body) {
-        Res r = new Res();
-        HttpURLConnection c = null;
-        try {
-            if (!url.startsWith("https://")) throw new Exception("Only https is allowed");
-            c = (HttpURLConnection) new URL(url).openConnection();
-            c.setRequestMethod(method);
-            c.setConnectTimeout(15000);
-            c.setReadTimeout(15000);
-            // Some exchanges turn away requests that don't look like a phone browser.
-            c.setRequestProperty("User-Agent", userAgent);
-            c.setRequestProperty("Accept", "application/json");
-            if (headers != null) for (Map.Entry<String, String> h : headers.entrySet()) c.setRequestProperty(h.getKey(), h.getValue());
-            if (body != null) {
-                c.setDoOutput(true);
-                c.setRequestProperty("Content-Type", "application/json");
-                c.getOutputStream().write(body.getBytes(StandardCharsets.UTF_8));
-            }
-            int code = c.getResponseCode();
-            InputStream in = code >= 400 ? c.getErrorStream() : c.getInputStream();
-            String text = in == null ? "" : readAll(in);
-            r.ok = code < 400;
-            r.body = r.ok ? text : ("HTTP " + code + " " + text);
-        } catch (Exception e) {
-            r.ok = false;
-            r.body = String.valueOf(e.getMessage());
-        } finally {
-            if (c != null) c.disconnect();
+    private static final OkHttpClient plain = new OkHttpClient.Builder()
+            .connectTimeout(12, TimeUnit.SECONDS).readTimeout(15, TimeUnit.SECONDS).build();
+    private static OkHttpClient secureDns;
+
+    /**
+     * Some networks block exchanges by answering their address lookups with a block page
+     * (seen as certificate errors like "Trust anchor for certification path not found").
+     * This client looks addresses up over encrypted DNS (Cloudflare, then Google) instead.
+     * The connection itself is still normal HTTPS with full certificate checks.
+     */
+    private static synchronized OkHttpClient secureDnsClient() throws Exception {
+        if (secureDns != null) return secureDns;
+        OkHttpClient boot = plain.newBuilder().build();
+        final DnsOverHttps cf = new DnsOverHttps.Builder().client(boot)
+                .url(HttpUrl.get("https://cloudflare-dns.com/dns-query"))
+                .bootstrapDnsHosts(InetAddress.getByName("1.1.1.1"), InetAddress.getByName("1.0.0.1")).build();
+        final DnsOverHttps gg = new DnsOverHttps.Builder().client(boot)
+                .url(HttpUrl.get("https://dns.google/dns-query"))
+                .bootstrapDnsHosts(InetAddress.getByName("8.8.8.8"), InetAddress.getByName("8.8.4.4")).build();
+        Dns both = host -> {
+            try { return cf.lookup(host); } catch (UnknownHostException e) { return gg.lookup(host); }
+        };
+        secureDns = plain.newBuilder().dns(both).build();
+        return secureDns;
+    }
+
+    private static Res call(OkHttpClient client, String method, String url, Map<String, String> headers, String body) throws Exception {
+        Request.Builder rb = new Request.Builder().url(url)
+                .header("User-Agent", userAgent)
+                .header("Accept", "application/json");
+        if (headers != null) for (Map.Entry<String, String> h : headers.entrySet()) rb.header(h.getKey(), h.getValue());
+        if (body != null) rb.method(method, RequestBody.create(body, MediaType.get("application/json; charset=utf-8")));
+        else rb.method(method, null);
+        try (Response resp = client.newCall(rb.build()).execute()) {
+            Res r = new Res();
+            String text = resp.body() == null ? "" : resp.body().string();
+            r.ok = resp.isSuccessful();
+            r.body = r.ok ? text : ("HTTP " + resp.code() + " " + text);
+            return r;
         }
-        return r;
+    }
+
+    private static Res request(String method, String url, Map<String, String> headers, String body) {
+        if (!url.startsWith("https://")) { Res r = new Res(); r.body = "Only https is allowed"; return r; }
+        try {
+            return call(plain, method, url, headers, body);
+        } catch (Exception first) {
+            // Couldn't connect, or the network answered with a fake certificate: try again over encrypted DNS.
+            try { return call(secureDnsClient(), method, url, headers, body); }
+            catch (Exception second) { Res r = new Res(); r.body = String.valueOf(second.getMessage() != null ? second.getMessage() : first.getMessage()); return r; }
+        }
     }
 
     private void reply(String id, Res r) {
@@ -207,6 +242,7 @@ public class MainActivity extends Activity {
 
     private static long okxTime() {
         Res r = request("GET", "https://www.okx.com/api/v5/public/time", null, null);
+        if (!r.ok) r = request("GET", "https://aws.okx.com/api/v5/public/time", null, null);
         try { if (r.ok) return Long.parseLong(new JSONObject(r.body).getJSONArray("data").getJSONObject(0).getString("ts")); } catch (Exception ignored) { }
         return System.currentTimeMillis();
     }
@@ -266,7 +302,10 @@ public class MainActivity extends Activity {
                 h.put("OK-ACCESS-TIMESTAMP", ts);
                 h.put("OK-ACCESS-PASSPHRASE", k[2]);
                 h.put("Content-Type", "application/json");
-                return request("GET", "https://www.okx.com" + path, h, null);
+                Res first = request("GET", "https://www.okx.com" + path, h, null);
+                // OKX's second address for the same global API, used when www.okx.com can't be reached.
+                if (!first.ok && (first.body == null || !first.body.contains("{"))) return request("GET", "https://aws.okx.com" + path, h, null);
+                return first;
             }
             if (ex.equals("bybit")) {
                 // USDT perpetuals (linear) on the Unified Trading Account.

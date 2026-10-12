@@ -92,7 +92,6 @@ header.top{display:flex;align-items:center;justify-content:space-between;padding
 .btn{border:0;border-radius:12px;padding:13px 16px;font-weight:600;font-size:15px;cursor:pointer;background:var(--accent);color:var(--surface);width:100%}
 .btn.ghost{background:var(--line);color:var(--ink)}
 .btn.danger{background:var(--down-soft);color:var(--down)}
-.btn.danger.solid{background:var(--down);color:var(--surface)}
 .btn.sm{width:auto;padding:8px 12px;font-size:13.5px;border-radius:10px}
 .caprow{align-items:center}
 .caprow .v{display:flex;align-items:center;gap:12px}
@@ -269,6 +268,9 @@ const ALT_ALL = {
   "mexc|spot":    [["https://www.mexc.com/open/api/v2/market/ticker", j=>j.data.map(x=>[x.symbol,x.last])]],
   "mexc|futures": [["https://futures.mexc.com/api/v1/contract/ticker", j=>j.data.map(x=>[x.symbol,x.lastPrice])]],
   "bybit|futures": [["https://api.bytick.com/v5/market/tickers?category=linear", j=>j.result.list.map(x=>[x.symbol,x.lastPrice])]],
+  "bybit|spot":    [["https://api.bytick.com/v5/market/tickers?category=spot", j=>j.result.list.map(x=>[x.symbol,x.lastPrice])]],
+  "okx|futures":   [["https://aws.okx.com/api/v5/market/tickers?instType=SWAP", j=>j.data.map(x=>[x.instId.replace(/-SWAP$/,""),x.last])]],
+  "okx|spot":      [["https://aws.okx.com/api/v5/market/tickers?instType=SPOT", j=>j.data.map(x=>[x.instId,x.last])]],
 };
 const goodSrc = {}; // which address worked last time, tried first next time
 const allCache = {}; // "ex|market" -> {rows:[{pair,b,q,p}], at}
@@ -386,7 +388,9 @@ const sortTps = p => p.tps.sort((a,b)=>p.dir==="Long"? a-b : b-a);
 let okxCt=null; // OKX swap contract sizes: instId -> coins per contract
 async function okxContracts(){
   if(okxCt) return okxCt;
-  const j=JSON.parse(await httpGet("https://www.okx.com/api/v5/public/instruments?instType=SWAP")); const m={};
+  let j; try{ j=JSON.parse(await httpGet("https://www.okx.com/api/v5/public/instruments?instType=SWAP")); }
+  catch(e){ j=JSON.parse(await httpGet("https://aws.okx.com/api/v5/public/instruments?instType=SWAP")); }
+  const m={};
   (j.data||[]).forEach(x=>{ m[x.instId]=num(x.ctVal)||1; }); okxCt=m; return m;
 }
 async function fetchAccount(ex){
@@ -1118,7 +1122,7 @@ async function capitalPrompt(ex, then){
     <span class="hint" style="font-size:12.5px;color:var(--ink-3)">Your profit or loss on ${name} is measured from this amount. It's recorded with today's date.</span>
     <div id="cap-err" class="err" hidden></div>
     <button class="btn" data-act="capSave">${then?"Record and switch":"Record"}</button>
-    ${then?`<button class="btn danger solid" data-act="capSkip">Switch without recording</button>`:""}
+    ${then?`<button class="btn danger" data-act="capSkip">Switch without recording</button>`:""}
   </div>`);
   if(!has) return;
   try{
