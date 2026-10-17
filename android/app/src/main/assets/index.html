@@ -1317,14 +1317,25 @@ function newTradeSheet(pre){
   $("ntf").addEventListener("submit",e=>{ e.preventDefault(); if(!ui.sheet.calc) saveNew(); });
   upd();
 }
+// Numbers typed with a comma as the decimal point (0,6818) read the same as 0.6818.
+const numIn = id => parseFloat(String($(id).value||"").trim().replace(/\s/g,"").replace(",","."));
+// A stop that far from entry is almost always a missing "0." — suggest the same digits at the right scale.
+function stopFix(entry, sl, dir){
+  let best=null;
+  for(let k=-8;k<=8;k++){ const v=sl*Math.pow(10,k), d=Math.abs(v-entry)/entry;
+    if(k!==0 && d<=0.5 && (dir==="Short"? v>entry : v<entry) && (!best || d<best.d)) best={v:+v.toPrecision(8), d}; }
+  return best && best.v;
+}
 function readNew(){
-  const entry=parseFloat($("n-entry").value), sl=parseFloat($("n-sl").value), risk=parseFloat($("n-risk").value), dir=ui.sheet.dir;
-  const lev = ui.sheet.market==="spot" ? 1 : Math.max(1, parseFloat($("n-lev").value)||1);
+  const entry=numIn("n-entry"), sl=numIn("n-sl"), risk=numIn("n-risk"), dir=ui.sheet.dir;
+  const lev = ui.sheet.market==="spot" ? 1 : Math.max(1, numIn("n-lev")||1);
   let err="";
   if(!(entry>0)) err="Enter the entry price.";
   else if(!(sl>0)) err="Enter the stop-loss price.";
   else if(dir==="Long" && sl>=entry) err="For a long, the stop loss must be below entry.";
   else if(dir==="Short" && sl<=entry) err="For a short, the stop loss must be above entry.";
+  else if(Math.abs(entry-sl)/entry > 0.5){ const fix=stopFix(entry, sl, dir);
+    err=`The stop is ${(Math.abs(entry-sl)/entry*100).toLocaleString("en-US",{maximumFractionDigits:0})}% away from entry. Check the decimal point${fix?`. Did you mean ${price(fix)}?`:"."}`; }
   else if(!(risk>0)) err="Enter how much you are risking.";
   return {entry,sl,risk,dir,lev,err};
 }
@@ -1333,8 +1344,9 @@ function updatePreview(c){
   $("f-entry").classList.toggle("bad", v.err.includes("entry")&&$("n-entry").value!=="");
   $("f-sl").classList.toggle("bad", v.err.includes("stop")&&$("n-sl").value!=="");
   const sum=$("n-sum"), sumsub=$("n-sumsub");
-  if(v.err){ box.innerHTML=`<div class="label">Position</div><div class="note" style="margin-top:8px">Enter entry and stop loss to size the position.</div>`;
-    if(sum){ sum.textContent="—"; sumsub.textContent="Enter entry and stop"; } return; }
+  if(v.err){ const typo=/decimal point/.test(v.err);
+    box.innerHTML=`<div class="label">Position</div>${typo?`<div class="warnbox" style="margin-top:8px">${esc(v.err)}</div>`:`<div class="note" style="margin-top:8px">Enter entry and stop loss to size the position.</div>`}`;
+    if(sum){ sum.textContent="—"; sumsub.textContent= typo ? "Check the stop loss" : "Enter entry and stop"; } return; }
   const dist=Math.abs(v.entry-v.sl), size=v.risk/dist, value=size*v.entry, lev=c.bal>0? value/c.bal : 0;
   if(sum){ const b=(splitPair($("n-pair").value)||{b:"units"}).b; sum.textContent=`${units(size)} ${b}`; sumsub.textContent=`${money(value)} USDT · risk ${money(v.risk)}`; }
   const L=levInfo(v.entry,v.sl,v.dir,value,v.lev,ui.sheet.mmr ?? S.settings.mmr), fut=ui.sheet.market!=="spot";
