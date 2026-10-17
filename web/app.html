@@ -396,7 +396,7 @@ async function fetchAccount(ex){
   if(ex==="binance"){
     await tryPart("Futures", async()=>{ const j=JSON.parse(await privateGet(ex,"futAccount")); if(j.code<0) throw new Error(j.msg); out.futEq=num(j.totalMarginBalance); out.futWallet=num(j.totalWalletBalance); });
     out.posOk = await tryPart("Positions", async()=>{ const j=JSON.parse(await privateGet(ex,"positions")); if(!Array.isArray(j)) throw new Error(j.msg||"No positions returned.");
-      out.levMap={}; j.forEach(x=>{ if(num(x.leverage)) out.levMap[x.symbol]=num(x.leverage); });
+      out.levMap={}; out.modeMap={}; j.forEach(x=>{ if(num(x.leverage)) out.levMap[x.symbol]=num(x.leverage); if(x.marginType) out.modeMap[x.symbol]=String(x.marginType).toLowerCase()==="isolated"?"isolated":"cross"; });
       out.positions=j.filter(x=>num(x.positionAmt)!==0).map(x=>{ const amt=num(x.positionAmt), lev=num(x.leverage), notional=Math.abs(num(x.notional))||Math.abs(amt)*num(x.markPrice);
         return {key:"binance|"+x.symbol+"|"+(amt>0?"L":"S"), sym:x.symbol, posSide:x.positionSide, pair:pairLabel(x.symbol), dir:amt>0?"Long":"Short", size:Math.abs(amt), entry:num(x.entryPrice), mark:num(x.markPrice), upnl:num(x.unRealizedProfit), lev,
           liq:num(x.liquidationPrice)||null, margin:(x.marginType==="isolated"&&num(x.isolatedMargin))? num(x.isolatedMargin) : (lev? notional/lev : null), marginType:x.marginType||"", sl:null, tps:[]}; }); });
@@ -1160,13 +1160,13 @@ function closeSheet(){ $("sheet").hidden=true; ui.sheet=null; document.body.styl
 // Leverage (and MEXC's maintenance margin rate) set on the exchange for a pair and direction, read-only.
 async function exLeverage(ex, sp, dir){
   const short = dir==="Short";
-  if(ex==="binance"){ return {lev:((accounts().binance||{}).levMap||{})[sp.b+sp.q]||0}; }
+  if(ex==="binance"){ const a=accounts().binance||{}; return {lev:(a.levMap||{})[sp.b+sp.q]||0, mode:(a.modeMap||{})[sp.b+sp.q]||null}; }
   if(ex==="okx"){ const d=okj(await privateGet("okx","leverage:"+sp.b+"_"+sp.q)).data||[];
     const row=d.find(x=>x.posSide===(short?"short":"long")) || d.find(x=>x.posSide==="net") || d[0]; return {lev:num(row&&row.lever)}; }
   if(ex==="bybit"){ const d=(byj(await privateGet("bybit","leverage:"+sp.b+"_"+sp.q)).result||{}).list||[];
-    const row=d.find(x=>num(x.positionIdx)===(short?2:1)) || d[0]; return {lev:num(row&&row.leverage)}; }
+    const row=d.find(x=>num(x.positionIdx)===(short?2:1)) || d[0]; return {lev:num(row&&row.leverage), mode: row&&row.tradeMode!=null ? (num(row.tradeMode)===1?"isolated":"cross") : null}; }
   const d=mxj(await privateGet("mexc","leverage:"+sp.b+"_"+sp.q)).data||[];
-  const row=d.find(x=>x.positionType===(short?2:1)) || d[0]; return {lev:num(row&&row.leverage), mmr:num(row&&row.mmr)*100};
+  const row=d.find(x=>x.positionType===(short?2:1)) || d[0]; return {lev:num(row&&row.leverage), mmr:num(row&&row.mmr)*100, mode: row&&row.openType ? (num(row.openType)===1?"isolated":"cross") : null};
 }
 // Starting capital, recorded per exchange: profit is measured from it.
 const startCap = ex => (S.settings.startCap||{})[ex||tradeEx()] || null;
@@ -1203,7 +1203,7 @@ function newTradeSheet(pre){
   // With trades logged automatically, this sheet is a calculator: size the position before opening it on the exchange.
   const calc = S.settings.autoLog!==false && !pre.posKey;
   const tex=pre.ex||tradeEx(), xn=EX[tex].name;
-  ui.sheet={kind:"new", calc, posKey:pre.posKey||null, dir:pre.dir||"Long", ex:tex, market:"futures"};
+  ui.sheet={kind:"new", calc, posKey:pre.posKey||null, dir:pre.dir||"Long", ex:tex, market:"futures", mode:pre.mode||S.settings.marginMode||"cross"};
   openSheet(`<header><h2>${calc?"Position size":"New trade"}</h2><button class="x" data-act="close" aria-label="Close">×</button>
     ${calc?`<div class="sumline"><span class="big" id="n-sum">—</span><span class="sub" id="n-sumsub">Enter entry and stop</span></div>`:""}</header>
   <form id="ntf" class="form" novalidate>
@@ -1223,6 +1223,7 @@ function newTradeSheet(pre){
       <div class="field" id="f-sl"><label for="n-sl">Stop loss</label><input id="n-sl" class="num" inputmode="decimal" placeholder="0.00" value="${pre.sl||""}"></div>
     </div>
     <div id="n-livemsg" class="hint" style="font-size:12.5px;color:var(--ink-3);margin-top:-4px" hidden></div>
+    <div class="field" id="f-mode"><label>Margin mode</label><div class="seg" id="n-mode">${["cross","isolated"].map(m=>`<button type="button" data-mode="${m}" aria-pressed="${ui.sheet.mode===m}">${m==="cross"?"Cross":"Isolated"}</button>`).join("")}</div></div>
     <div class="two">
       <div class="field"><label for="n-risk">Risk (${esc(S.settings.currency)})</label><input id="n-risk" class="num" inputmode="decimal" value="${pre.risk>0? pre.risk.toFixed(2) : c.nextUsd.toFixed(2)}"></div>
       <div class="field" id="f-lev"><label for="n-lev" id="n-levlbl">Leverage (x)</label>
@@ -1258,7 +1259,10 @@ function newTradeSheet(pre){
   const levHint=()=>{ const src=$("n-levsrc"); if(!src) return; const cur=parseFloat($("n-lev").value), ex=ui.sheet.exLev;
     $("n-levchips").querySelectorAll("button").forEach(b=>b.setAttribute("aria-pressed", String(+b.dataset.lev===cur)));
     if(ex>0 && cur>0 && Math.abs(cur-ex)>1e-9){ src.innerHTML=`<span style="color:var(--warn)">Your ${xn} setting${ui.sheet.levPair?" for "+esc(ui.sheet.levPair):""} is ${ex}x. Change it to ${cur}x on ${xn} before you open the trade.</span>`; }
-    else src.textContent = ex>0 ? `${ui.sheet.levNote||"Same as your "+xn+" setting"}.` : (ui.sheet.levNote||""); };
+    else src.textContent = ex>0 ? `${ui.sheet.levNote||"Same as your "+xn+" setting"}.` : (ui.sheet.levNote||"");
+    const em=ui.sheet.exMode; if(em && em!==ui.sheet.mode) src.innerHTML += `${src.innerHTML?"<br>":""}<span style="color:var(--warn)">${xn} is set to ${em==="cross"?"Cross":"Isolated"} for this pair. Switch it on ${xn} to ${ui.sheet.mode==="cross"?"Cross":"Isolated"} before you open the trade.</span>`; };
+  $("n-mode").addEventListener("click",e=>{ const b=e.target.closest("[data-mode]"); if(!b) return; ui.sheet.mode=b.dataset.mode; ui.sheet.modeEdited=true;
+    S.settings.marginMode=ui.sheet.mode; persist(); $("n-mode").querySelectorAll("button").forEach(x=>x.setAttribute("aria-pressed",String(x===b))); levHint(); upd(); });
   const setLev=v=>{ $("n-lev").value=v; ui.sheet.levEdited=true; if(v>=1){ S.settings.leverage=v; persist(); } levHint(); upd(); };
   $("n-lev").addEventListener("input",()=>{ const v=parseFloat($("n-lev").value); ui.sheet.levEdited=true; if(v>=1){ S.settings.leverage=v; persist(); } levHint(); });
   $("n-levchips").addEventListener("click",e=>{ const b=e.target.closest("[data-lev]"); if(b) setLev(+b.dataset.lev); });
@@ -1268,13 +1272,15 @@ function newTradeSheet(pre){
     const sp=splitPair($("n-pair").value); if(!sp) return;
     const pair=sp.b+"/"+sp.q, want=ui.sheet.dir==="Short"?"Short":"Long", my=++levReq;
     const pos=((accounts()[tex]||{}).positions||[]).find(p=>p.pair===pair && p.dir===want);
+    const showMode=m=>{ if(!m) return; ui.sheet.exMode=m; if(!ui.sheet.modeEdited){ ui.sheet.mode=m; $("n-mode").querySelectorAll("button").forEach(x=>x.setAttribute("aria-pressed",String(x.dataset.mode===m))); } };
     const showLev=(v, note)=>{ ui.sheet.exLev=v; ui.sheet.levPair=pair; ui.sheet.levNote=note; if(!ui.sheet.levEdited) $("n-lev").value=v; levHint(); upd(); };
-    if(pos && pos.lev){ showLev(pos.lev, `From your open ${xn} position`); return; }
+    if(pos && pos.lev){ showMode(pos.marginType==="isolated"?"isolated":pos.marginType==="cross"?"cross":null); showLev(pos.lev, `From your open ${xn} position`); return; }
     if(!(Native && keyInfo(tex))) return;
     try{
       const row=await exLeverage(tex, sp, want);
       if(my!==levReq || !ui.sheet || !$("n-lev")) return;
       if(row.mmr>0) ui.sheet.mmr = row.mmr;
+      showMode(row.mode);
       if(row.lev>0) showLev(row.lev, `Same as your ${xn} setting for ${pair}`);
       else { ui.sheet.exLev=null; ui.sheet.levNote=`Not set on ${xn} for ${pair} yet.`; levHint(); }
     }catch(e){}
@@ -1345,16 +1351,23 @@ function updatePreview(c){
   if(sum){ const b=(splitPair($("n-pair").value)||{b:"units"}).b; sum.textContent=`${units(size)} ${b}`; sumsub.textContent=`${money(value)} USDT · risk ${money(v.risk)}`; }
   const L=levInfo(v.entry,v.sl,v.dir,value,v.lev,ui.sheet.mmr ?? S.settings.mmr), fut=ui.sheet.market!=="spot";
   const bal=(c.exBal>0?c.exBal:c.bal);
+  // Cross: the whole futures balance backs the trade (less margin your other open positions already use),
+  // so liquidation is where the loss would eat all of it. Leverage only changes the margin.
+  const cross = ui.sheet.mode==="cross", others=((accounts()[ui.sheet.ex]||{}).positions||[]).reduce((s,p)=>s+(Number(p.margin)||0),0);
+  const free=Math.max(bal-others,0), mm=(ui.sheet.mmr ?? S.settings.mmr)/100*value;
+  if(cross){ const room=(free-mm)/size; L.liq = v.dir==="Short" ? v.entry+room : (v.entry-room>0 ? v.entry-room : null);
+    L.liqFirst = L.liq!=null && (v.dir==="Short" ? L.liq<=v.sl : L.liq>=v.sl); L.tooHigh=false; }
   box.innerHTML=`<div class="label">Position</div>
     <div class="kv" style="margin-top:6px"><span class="k">Size</span><span class="v">${units(size)} units</span></div>
     <div class="kv"><span class="k">Position value</span><span class="v">${money(value)}</span></div>
     ${hasSec()?`<div class="kv"><span class="k">Risk in ${esc(S.settings.secondCur)}</span><span class="v">${fmtSec(v.risk)}</span></div>`:""}
     <div class="kv"><span class="k">Stop distance</span><span class="v">${(dist/v.entry*100).toFixed(2)}%</span></div>
     ${fut?`<div class="kv"><span class="k">Margin at ${L.lev}x</span><span class="v">${money(L.margin)}<br><span style="font-size:12px;color:var(--ink-3)">${bal>0?(L.margin/bal*100).toFixed(1)+"% of balance":""}</span></span></div>
-    <div class="kv"><span class="k">Liquidation ≈</span><span class="v ${L.liqFirst?"down":""}">${L.liq?price(L.liq):"—"}</span></div>
-    <div class="kv"><span class="k">Highest safe leverage</span><span class="v">${L.maxLev}x</span></div>`
+    <div class="kv"><span class="k">Liquidation ≈ (${cross?"cross":"isolated"})${cross?`<br><span style="font-size:12px;color:var(--ink-3)">backed by ${money(free)} of your futures balance${others>0?", after your other positions' margin":""}</span>`:""}</span><span class="v ${L.liqFirst?"down":""}">${L.liq?price(L.liq):cross?"none":"—"}</span></div>
+    ${cross?"":`<div class="kv"><span class="k">Highest safe leverage</span><span class="v">${L.maxLev}x</span></div>`}`
     :`<div class="kv"><span class="k">Value ÷ balance</span><span class="v">${lev.toFixed(1)}x</span></div>`}
-    ${fut&&L.liqFirst?`<div class="warnbox" style="margin-top:8px"><b>Liquidation comes before your stop loss.</b> At ${L.lev}x you'd be liquidated around ${price(L.liq)}, before the stop at ${price(v.sl)}. Use ${L.maxLev}x or less.</div>`
+    ${fut&&L.liqFirst&&cross?`<div class="warnbox" style="margin-top:8px"><b>Liquidation comes before your stop loss.</b> Your free futures balance (${money(free)}) can't cover a loss down to the stop, so you'd be liquidated around ${price(L.liq)}. Lower the risk or add funds.</div>`
+      : fut&&L.liqFirst?`<div class="warnbox" style="margin-top:8px"><b>Liquidation comes before your stop loss.</b> At ${L.lev}x you'd be liquidated around ${price(L.liq)}, before the stop at ${price(v.sl)}. Use ${L.maxLev}x or less, or switch to Cross.</div>`
       : fut&&L.tooHigh?`<div class="warnbox" style="margin-top:8px">${L.lev}x leaves almost no room between the stop and liquidation. ${L.maxLev}x or less is safer.</div>`:""}
     ${(()=>{ const ta=accounts()[ui.sheet.ex], tb=ta&&keyInfo(ui.sheet.ex)? acctTotal(ta) : null, nm=EX[ui.sheet.ex].name;
       if(fut && tb!=null && L.margin>tb) return `<div class="warnbox" style="margin-top:8px">This needs ${money(L.margin)} margin, but ${nm} futures has ${money(tb)}. Move funds to ${nm} futures, raise the leverage, or lower the risk.</div>`;
