@@ -334,7 +334,14 @@ public class MainActivity extends Activity {
                 if (kind.equals("futAssets")) path = "/api/v1/private/account/assets";
                 else if (kind.equals("positions")) path = "/api/v1/private/position/open_positions";
                 else if (kind.equals("stopOrders")) { path = "/api/v1/private/stoporder/list/orders"; params = "is_finished=0&page_num=1&page_size=100"; }
-                else if (kind.equals("history")) { path = "/api/v1/private/position/list/history_positions"; params = "page_num=1&page_size=50"; }
+                else if (kind.equals("history")) { path = "/api/v1/private/position/list/history_positions"; params = "page_num=1&page_size=100"; }
+                else if (kind.startsWith("orders:")) {
+                    // Completed orders for one contract since a time: every open, partial close and close, with fills and profit.
+                    String[] o = kind.split(":");
+                    if (o.length != 3 || !o[1].matches(SYM) || !o[2].matches("\\d{10,14}")) { r.body = "Unknown request"; return r; }
+                    path = "/api/v1/private/order/list/history_orders";
+                    params = "page_num=1&page_size=100&start_time=" + o[2] + "&states=3&symbol=" + o[1]; // keys in alphabetical order, as MEXC signs them
+                }
                 else if (kind.startsWith("leverage:") && kind.substring(9).matches(SYM)) { path = "/api/v1/private/position/leverage"; params = "symbol=" + kind.substring(9); }
                 else { r.body = "Unknown request"; return r; }
                 String ts = String.valueOf(serverTime("https://contract.mexc.com/api/v1/contract/ping", null));
