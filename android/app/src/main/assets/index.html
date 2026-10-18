@@ -119,8 +119,8 @@ nav.tabs button[aria-selected="true"]{color:var(--accent)}
 .sheet.float .field input,.sheet.float .field select{background:var(--bg)}
 .sheet.float .card.preview{background:var(--bg)}
 .sumline{flex-basis:100%;display:flex;justify-content:space-between;align-items:baseline;gap:10px}
-.sumline .big{font-family:var(--f-num);font-size:22px;font-weight:600;color:var(--accent)}
-.sumline .sub{font-size:12.5px;color:var(--ink-3)}
+.sumline .big{font-family:var(--f-num);font-size:22px;font-weight:600;color:var(--accent);white-space:nowrap}
+.sumline .sub{font-size:12.5px;color:var(--ink-3);text-align:right;min-width:0}
 @media (prefers-reduced-motion:no-preference){.sheet.float:not([hidden]) .wrap{animation:pop .2s ease-out}@keyframes pop{from{transform:translateY(24px);opacity:.4}to{transform:none;opacity:1}}}
 .x{border:0;background:var(--line);border-radius:10px;width:38px;height:38px;cursor:pointer;font-size:20px;line-height:1}
 /* form */
@@ -1276,6 +1276,7 @@ function newTradeSheet(pre){
   async function levFromMexc(){
     if(!ui.sheet || ui.sheet.kind!=="new" || !$("n-pair")) return; // card was closed
     const sp=splitPair($("n-pair").value); if(!sp) return;
+    if(tex==="mexc"){ const want=sp.b+"_"+sp.q; ui.sheet.cs=null; mexcCs(want).then(cs=>{ if(ui.sheet && ui.sheet.kind==="new" && splitPair($("n-pair").value) && splitPair($("n-pair").value).b+"_"+splitPair($("n-pair").value).q===want){ ui.sheet.cs=cs; upd(); } }); }
     const pair=sp.b+"/"+sp.q, want=ui.sheet.dir==="Short"?"Short":"Long", my=++levReq;
     const pos=((accounts()[tex]||{}).positions||[]).find(p=>p.pair===pair && p.dir===want);
     const showMode=m=>{ if(!m) return; ui.sheet.exMode=m; if(!ui.sheet.modeEdited){ ui.sheet.mode=m; $("n-mode").querySelectorAll("button").forEach(x=>x.setAttribute("aria-pressed",String(x.dataset.mode===m))); } };
@@ -1354,7 +1355,8 @@ function updatePreview(c){
     box.innerHTML=`<div class="label">Position</div>${typo?`<div class="warnbox" style="margin-top:8px">${esc(v.err)}</div>`:`<div class="note" style="margin-top:8px">Enter entry and stop loss to size the position.</div>`}`;
     if(sum){ sum.textContent="—"; sumsub.textContent= typo ? "Check the stop loss" : "Enter entry and stop"; } return; }
   const dist=Math.abs(v.entry-v.sl), size=v.risk/dist, value=size*v.entry, lev=c.bal>0? value/c.bal : 0;
-  if(sum){ const b=(splitPair($("n-pair").value)||{b:"units"}).b; sum.textContent=`${units(size)} ${b}`; sumsub.textContent=`${money(value)} USDT · risk ${money(v.risk)}`; }
+  const coin=(splitPair($("n-pair").value)||{b:"units"}).b, cs=ui.sheet.ex==="mexc" ? ui.sheet.cs : null, cont = cs>0 ? Math.floor(size/cs) : null;
+  if(sum){ sum.textContent=`${money(value)} USDT`; sumsub.textContent=`= ${units(size)} ${coin}${cont!=null?` · ${cont.toLocaleString("en-US")} Cont`:""} · risk ${money(v.risk)}`; }
   const L=levInfo(v.entry,v.sl,v.dir,value,v.lev,ui.sheet.mmr ?? S.settings.mmr), fut=ui.sheet.market!=="spot";
   const bal=(c.exBal>0?c.exBal:c.bal);
   // Cross: the whole futures balance backs the trade (less margin your other open positions already use),
@@ -1364,8 +1366,9 @@ function updatePreview(c){
   if(cross){ const room=(free-mm)/size; L.liq = v.dir==="Short" ? v.entry+room : (v.entry-room>0 ? v.entry-room : null);
     L.liqFirst = L.liq!=null && (v.dir==="Short" ? L.liq<=v.sl : L.liq>=v.sl); L.tooHigh=false; }
   box.innerHTML=`<div class="label">Position</div>
-    <div class="kv" style="margin-top:6px"><span class="k">Size</span><span class="v">${units(size)} units</span></div>
-    <div class="kv"><span class="k">Position value</span><span class="v">${money(value)}</span></div>
+    <div class="kv" style="margin-top:6px"><span class="k">Amount (USDT)<br><span style="font-size:12px;color:var(--ink-3)">enter this on ${EX[ui.sheet.ex].name} with the unit set to USDT</span></span><span class="v">${money(value)}</span></div>
+    <div class="kv"><span class="k">Quantity (${esc(coin)})<br><span style="font-size:12px;color:var(--ink-3)">or this, with the unit set to ${esc(coin)}</span></span><span class="v">${units(size)}</span></div>
+    ${cont!=null?`<div class="kv"><span class="k">Contracts<br><span style="font-size:12px;color:var(--ink-3)">or this, with the unit set to Cont (1 Cont = ${units(cs)} ${esc(coin)})</span></span><span class="v">${cont.toLocaleString("en-US")}</span></div>`:""}
     ${hasSec()?`<div class="kv"><span class="k">Risk in ${esc(S.settings.secondCur)}</span><span class="v">${fmtSec(v.risk)}</span></div>`:""}
     <div class="kv"><span class="k">Stop distance</span><span class="v">${(dist/v.entry*100).toFixed(2)}%</span></div>
     ${fut?`<div class="kv"><span class="k">Margin at ${L.lev}x</span><span class="v">${money(L.margin)}<br><span style="font-size:12px;color:var(--ink-3)">${bal>0?(L.margin/bal*100).toFixed(1)+"% of balance":""}</span></span></div>
