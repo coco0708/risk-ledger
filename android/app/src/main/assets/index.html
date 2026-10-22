@@ -510,7 +510,10 @@ function syncList(){ const l=new Set([tradeEx()]);
   if(S.settings.autoLog!==false) S.trades.forEach(t=>{ if(!t.outcome && t.auto && t.ex) l.add(t.ex); });
   return [...l].filter(k=>ACCT_EX.includes(k) && keyInfo(k)); }
 const mirrorsEx = ex => ex===tradeEx() || S.trades.some(t=>!t.outcome && t.auto && t.ex===ex);
-async function syncAccounts(){
+// Only one sync runs at a time. Overlapping syncs (on launch, every 20 s, Refresh) used to add the same trade twice.
+let syncRun=null;
+function syncAccounts(){ if(!syncRun) syncRun=doSync().finally(()=>{ syncRun=null; }); return syncRun; }
+async function doSync(){
   S.accounts = S.accounts || {}; const res=[];
   ACCT_EX.forEach(k=>{ if(!keyInfo(k)) delete S.accounts[k]; });
   for(const ex of syncList()){
@@ -609,7 +612,9 @@ async function importMexcHistory(){
       pnlUsd:+num(h.realised).toFixed(4), exitPrice:num(h.closeAvgPrice)||null, closedAt:num(h.updateTime) };
     setInitialRisk(t, t.size0||0, 0, "mexc");
     try{ applyFills(t, await mexcFills(h.symbol, h.positionId, t.created)); }catch(e){}
-    classify(t); S.trades.push(t); have.add(key); added++;
+    classify(t);
+    if(S.trades.some(x=>x.posKey===key)) continue; // added meanwhile
+    S.trades.push(t); have.add(key); added++;
   }
   if(added){ persist(); if(typeof toast==="function") toast(`${added} closed MEXC trade${added>1?"s":""} added from history`); }
   return added>0;
@@ -637,6 +642,7 @@ async function mirrorEx(ex, acc, addNew){
           entry:p.entry, sl:p.sl||null, size0:p.size, sizeNow:p.size, closedSoFar:0, liq:p.liq||null, margin:p.margin||null, tpPrices:p.tps||[], tpHits:0, outcome:null, manualR:null, fees:0, note:"From "+name, closedAt:null, posKey:p.key, auto:true };
       setInitialRisk(t, p.size, p.sl, ex);
       if(ex==="mexc"){ try{ applyFills(t, await mexcFills(p.sym, p.posId, opened)); t.sizeNow=p.size; }catch(e){} }
+      if(S.trades.some(x=>x.posKey===p.key && !x.outcome)) continue; // added meanwhile
       S.trades.push(t); changed=true;
       if(typeof toast==="function") toast(`${p.pair} ${p.dir.toLowerCase()} added from ${name}`);
       continue;
@@ -1573,6 +1579,17 @@ async function doUpdateRate(){
 S=load();
 Object.assign(S.settings, {market:"futures", balScope:"futures"});
 if(!ACCT_EX.includes(S.settings.tradeEx)) S.settings.tradeEx="mexc";
+// Remove duplicate synced trades: same exchange position logged twice. Keep the copy with the most detail.
+(function dedupe(){
+  const score=t=>(t.fills?t.fills.length*10:0)+(t.outcome?5:0)+(t.note&&!/^From /.test(t.note)?3:0)+(t.riskEst?0:1);
+  const keep=new Map(), drop=new Set();
+  S.trades.forEach(t=>{ if(!t.posKey) return;
+    // an exchange position is one trade; a reopened Binance/Bybit symbol gets a new entry only after the old one closed
+    const k=t.posKey+"|"+(t.posKey.startsWith("mexc|")||t.posKey.startsWith("okx|") ? "" : (t.closedAt? Math.round(t.closedAt/60000) : "open"));
+    const prev=keep.get(k); if(!prev){ keep.set(k,t); return; }
+    if(score(t)>score(prev)){ drop.add(prev.id); keep.set(k,t); } else drop.add(t.id); });
+  if(drop.size){ S.trades=S.trades.filter(t=>!drop.has(t.id)); S.dedupedAt=Date.now(); }
+})();
 // One-time repair of synced trades whose risk came from a breakeven or moved stop (tiny risk → huge R).
 if(!S.settings.riskFix1){
   S.trades.filter(t=>t.auto).forEach(t=>{
