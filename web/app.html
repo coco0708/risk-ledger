@@ -16,7 +16,12 @@
   --bg:#0e1015; --surface:#171a21; --line:#262a34; --ink:#eef0f4; --ink-2:#a3a9b6; --ink-3:#6f7584;
   --accent:#3ccf91; --accent-soft:#12291f; --up:#3ccf91; --up-soft:#12291f; --down:#ff7a6e; --down-soft:#331816; --warn:#f0a63a; --warn-soft:#2e2312; color-scheme:dark}
 *{box-sizing:border-box}
-html,body{min-height:100%}
+html,body{min-height:100%;overscroll-behavior-y:contain}
+#ptr{position:fixed;left:50%;top:0;width:42px;height:42px;margin-left:-21px;border-radius:50%;background:var(--surface);border:1px solid var(--line);box-shadow:0 6px 18px rgba(0,0,0,.25);display:grid;place-items:center;z-index:30;transform:translateY(-60px);opacity:0;transition:transform .2s ease,opacity .2s ease;pointer-events:none}
+#ptr svg{width:20px;height:20px;stroke:var(--accent)}
+#ptr.ready svg{stroke:var(--ink)}
+#ptr.spin svg{animation:ptrspin .8s linear infinite}
+@keyframes ptrspin{to{transform:rotate(360deg)}}
 body{background:var(--bg);color:var(--ink);font-family:var(--f-ui);font-size:15px;line-height:1.4;-webkit-tap-highlight-color:transparent}
 button,input,select,textarea{font:inherit;color:inherit}
 .num{font-family:var(--f-num);font-variant-numeric:tabular-nums;letter-spacing:-.01em}
@@ -195,6 +200,7 @@ a.btn{display:block;text-align:center;text-decoration:none}
   <button id="t-settings" role="tab" data-tab="settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></svg>Settings</button>
 </div></nav>
 <section id="sheet" class="sheet" hidden><div class="wrap" id="sheetBody"></div></section>
+<div id="ptr" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12a8 8 0 1 1-2.34-5.66"/><path d="M20 4v5h-5"/></svg></div>
 <div id="toast" class="toast" hidden></div>
 
 <script>
@@ -1660,4 +1666,39 @@ setInterval(async()=>{ if(mirrorBusy || !Native || document.hidden || !syncList(
     if(before!==JSON.stringify(S.trades.map(t=>[t.id,t.outcome,t.sl,t.sizeNow,t.entry,t.lev,t.tpHits])) && $("sheet").hidden && ui.tab!=="settings") render(); }
   catch(e){} finally{ mirrorBusy=false; } }, 20000);
 document.addEventListener("visibilitychange", ()=>{ if(!document.hidden) tick(); });
+
+// Pull down from the top of any tab to refresh: balances, positions and trades from the exchange,
+// plus prices on Markets and the USDT rate.
+(function pullToRefresh(){
+  const el=$("ptr"), PULL=70, MAX=110; let y0=null, d=0, busy=false;
+  const show=(y,rot)=>{ el.style.transform=`translateY(${y}px) rotate(${rot}deg)`; el.style.opacity=String(Math.min(1, Math.max(0,(y+50)/60))); };
+  const hide=()=>{ el.style.transition=""; el.classList.remove("spin","ready"); show(-60,0); };
+  document.addEventListener("touchstart", e=>{
+    if(busy || !$("sheet").hidden || window.scrollY>0 || e.touches.length!==1 || e.target.closest("#spark")) { y0=null; return; }
+    y0=e.touches[0].clientY; d=0; el.style.transition="none"; }, {passive:true});
+  document.addEventListener("touchmove", e=>{
+    if(y0==null) return;
+    const dy=e.touches[0].clientY-y0;
+    if(dy<=0 || window.scrollY>0){ if(d>0){ d=0; hide(); } return; }
+    d=Math.min(dy*0.5, MAX); el.classList.toggle("ready", d>=PULL); show(d-50, d*3); }, {passive:true});
+  const end=async()=>{
+    if(y0==null) return; y0=null; el.style.transition="";
+    if(d<PULL){ hide(); return; }
+    busy=true; el.classList.remove("ready"); el.classList.add("spin"); show(24,0);
+    let msg="Updated";
+    try{
+      if(!Native) msg="Live data works in the Android app.";
+      else{
+        const jobs=[];
+        if(syncList().length) jobs.push(syncAccounts().then(errs=>{ if(errs && errs.length) msg=errs[0]; }));
+        if(ui.tab==="markets") jobs.push(loadMarkets(true));
+        if(ui.tab==="trades") jobs.push(refreshLive(S.trades));
+        if(S.settings.secondCur && !/^Typed/.test(S.settings.rateFrom||"")) jobs.push(updateRate().then(()=>{ S.settings.rateErr=null; }).catch(e=>{ S.settings.rateErr=String(e.message||e); }));
+        await Promise.allSettled(jobs);
+      }
+    }finally{ busy=false; hide(); if($("sheet").hidden && !unsavedSettings()) render(); toast(msg); }
+  };
+  document.addEventListener("touchend", end, {passive:true});
+  document.addEventListener("touchcancel", ()=>{ y0=null; hide(); }, {passive:true});
+})();
 </script>
