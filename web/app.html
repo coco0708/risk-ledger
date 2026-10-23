@@ -630,6 +630,7 @@ async function mirrorEx(ex, acc, addNew){
     let t=S.trades.find(x=>x.posKey===p.key && !x.outcome);
     if(!t){
       if(!addNew) continue;
+      if((S.ignoreKeys||[]).includes(p.key) || (S.ignoreOpen||{})[p.key]) continue; // you deleted this one
       if(S.sample){ S.trades=[]; S.sample=false; }
       const sp=splitPair(p.pair), opened=p.openedAt||now;
       t={ id:uid(), created:opened, date:localDate(opened), pair:sp.b+sp.q, sym:p.sym, ex, market:"futures", lev:p.lev, dir:p.dir,
@@ -663,6 +664,8 @@ async function mirrorEx(ex, acc, addNew){
       t.closedSoFar=(t.closedSoFar||0)+(t.sizeNow-p.size); t.sizeNow=p.size; changed=true;
     } else if(p.size > t.sizeNow*1.001){ t.sizeNow=p.size; t.size0=Math.max(t.size0||0,p.size); changed=true; }
   }
+  // a deleted Binance/Bybit position that has now closed: its symbol + side can be logged again
+  if(S.ignoreOpen) Object.keys(S.ignoreOpen).forEach(k=>{ if(k.startsWith(ex+"|") && !seen.has(k)){ delete S.ignoreOpen[k]; changed=true; } });
   // positions that are gone from the exchange: close the logged trade with the exchange's realised P&L
   for(const t of S.trades.filter(t=>!t.outcome && t.posKey && t.posKey.startsWith(ex+"|") && !seen.has(t.posKey))){
     if(!t.goneAt){ t.goneAt=now; changed=true; }
@@ -938,6 +941,15 @@ function drawSpark(c){
   svg.addEventListener("pointermove",move); svg.addEventListener("pointerdown",move); svg.addEventListener("pointerleave",out); svg.addEventListener("touchend",out);
 }
 
+// Remember deleted synced trades. MEXC and OKX positions have their own IDs, so they stay out for good.
+// Binance and Bybit only have symbol + side, so a deleted open position is skipped until it closes;
+// the next trade on that coin is logged normally.
+function forget(list){
+  S.ignoreKeys=S.ignoreKeys||[]; S.ignoreOpen=S.ignoreOpen||{};
+  list.forEach(t=>{ if(!t.posKey) return;
+    if(/^(mexc|okx)\|/.test(t.posKey)){ if(!S.ignoreKeys.includes(t.posKey)) S.ignoreKeys.push(t.posKey); }
+    else if(!t.outcome) S.ignoreOpen[t.posKey]=1; });
+}
 // partial closes: closing fills before the final one (all of them while the trade is still open)
 const partials = t => { const n=(t.fills||[]).filter(f=>f.kind==="close").length; return t.outcome ? Math.max(0,n-1) : n; };
 function viewTrades(c){
@@ -1526,14 +1538,17 @@ document.addEventListener("click",e=>{
   const a=e.target.closest("[data-act]"); if(!a) return;
   const act=a.dataset.act;
   if(act==="close") closeSheet();
-  else if(act==="clearSample"){ S={settings:S.settings, trades:[], sample:false}; persist(); render(); toast("Sample trades cleared"); }
+  else if(act==="clearSample"){ S={settings:S.settings, trades:[], sample:false, accounts:S.accounts, exPeak:S.exPeak, ignoreKeys:S.ignoreKeys, ignoreOpen:S.ignoreOpen}; persist(); render(); toast("Sample trades cleared"); }
   else if(act==="reopen"){ const t=S.trades.find(x=>x.id===ui.sheet.id); t.outcome=null; t.manualR=null; t.closedAt=null; persist(); closeSheet(); toast("Trade reopened"); }
   else if(act==="askDel"){ $("delZone").innerHTML=`<div class="confirm"><button class="btn ghost" type="button" data-act="close">Keep it</button><button class="btn danger" type="button" data-act="doDel">Yes, delete</button></div>`; }
-  else if(act==="doDel"){ const gone=S.trades.find(x=>x.id===ui.sheet.id); if(gone&&gone.posKey){ S.ignoreKeys=S.ignoreKeys||[]; S.ignoreKeys.push(gone.posKey); }
+  else if(act==="doDel"){ forget(S.trades.filter(x=>x.id===ui.sheet.id));
     S.trades=S.trades.filter(x=>x.id!==ui.sheet.id); persist(); closeSheet(); toast("Trade deleted"); }
   else if(act==="askReset"){ $("dangerZone").innerHTML=`<div class="confirm"><button class="btn ghost" data-act="cancelReset">Cancel</button><button class="btn danger" data-act="doReset">Delete everything</button></div>`; }
   else if(act==="cancelReset") render();
-  else if(act==="doReset"){ S={settings:S.settings, trades:[], sample:false}; persist(); render(); toast("All trades deleted"); }
+  else if(act==="doReset"){ forget(S.trades); const keep={accounts:S.accounts, exPeak:S.exPeak, ignoreKeys:S.ignoreKeys, ignoreOpen:S.ignoreOpen};
+    S=Object.assign({settings:S.settings, trades:[], sample:false}, keep);
+    S.settings.logSince=Date.now(); // nothing that closed before now is imported again
+    persist(); render(); toast("All trades deleted. Only trades from now on are logged."); }
   else if(act==="exportCsv") shareOrShow("Export CSV", csv(), "risk-ledger.csv");
   else if(act==="backup") shareOrShow("Back up", JSON.stringify({app:"risk-ledger",v:1,settings:S.settings,trades:S.trades.map(({_R,_pnl,...t})=>t)}), "Keep this text somewhere safe");
   else if(act==="restore") restoreSheet();
@@ -1553,7 +1568,9 @@ document.addEventListener("click",e=>{
     if(then) then(); else toast(`Starting capital recorded: ${money(startCap(sh.ex).amt)} ${S.settings.currency}`); }
   else if(act==="disconnect"){ if(Native&&Native.removeKeys) Native.removeKeys(a.dataset.ex); if(S.accounts) delete S.accounts[a.dataset.ex]; persist(); render(); toast(EX[a.dataset.ex].name+" disconnected"); }
   else if(act==="syncAcct"){ toast("Refreshing balances…"); syncAccounts().then(errs=>{ render(); toast(errs.length? errs[0] : "Balances updated"); }); }
-  else if(act==="doRestore"){ const err=$("io-err"); try{ const o=JSON.parse($("io-in").value); if(!o.settings||!Array.isArray(o.trades)) throw 0; S={settings:Object.assign(clone(DEF),o.settings), trades:o.trades, sample:false}; persist(); closeSheet(); ui.tab="dash"; render(); toast("Backup restored"); }catch(x){ err.hidden=false; err.textContent="That text isn't a Risk Ledger backup. Copy the whole backup and try again."; } }
+  else if(act==="doRestore"){ const err=$("io-err"); try{ const o=JSON.parse($("io-in").value); if(!o.settings||!Array.isArray(o.trades)) throw 0; const restored=new Set(o.trades.map(t=>t.posKey).filter(Boolean));
+    S={settings:Object.assign(clone(DEF),o.settings), trades:o.trades, sample:false, accounts:S.accounts, exPeak:S.exPeak,
+       ignoreKeys:(S.ignoreKeys||[]).filter(k=>!restored.has(k)), ignoreOpen:S.ignoreOpen}; persist(); closeSheet(); ui.tab="dash"; render(); toast("Backup restored"); }catch(x){ err.hidden=false; err.textContent="That text isn't a Risk Ledger backup. Copy the whole backup and try again."; } }
   else if(act==="copyOut"){ const ta=$("io-out"); const done=()=>toast("Copied"); try{ navigator.clipboard.writeText(ta.value).then(done,()=>{ta.select();toast("Text selected. Copy it from here.");}); }catch(x){ ta.select(); } }
 });
 $("fab").addEventListener("click",()=>newTradeSheet());
