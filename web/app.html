@@ -1112,6 +1112,9 @@ function viewSettings(){
       <div class="field"><label for="s-mult">Risk while on (%)</label><input id="s-mult" class="num" inputmode="decimal" value="${st.brakeMult}"></div>
     </div>
     <span class="hint" style="font-size:12.5px;color:var(--ink-3)">At 50%, a 3% risk becomes 1.5% until the balance makes a new high.</span>
+    ${(()=>{ const x=exRisk(tradeEx()); if(!x) return ""; return `<div class="kv caprow"><span class="k">Peak balance · ${exName()}<br><span style="font-size:12px;color:var(--ink-3)">now ${money(x.bal)} · down ${pct(x.dd)}${x.brake?" · brake on":""}</span></span>
+      <span class="v num">${money(x.peak)}<button class="btn sm" data-act="resetPeak">Reset</button></span></div>
+      <span class="hint" style="font-size:12.5px;color:var(--ink-3)">Reset after a deposit, a withdrawal or a fresh start, so the drawdown is measured from your balance now. Recording a new starting capital resets it too.</span>`; })()}
     <div class="savebar"><span class="hint" data-dirty hidden>Unsaved changes</span><div class="err" data-saveerr hidden></div><button class="btn" data-save="brake" disabled>Save</button></div>
   </section>
 
@@ -1198,6 +1201,9 @@ async function exLeverage(ex, sp, dir){
   const d=mxj(await privateGet("mexc","leverage:"+sp.b+"_"+sp.q)).data||[];
   const row=d.find(x=>x.positionType===(short?2:1)) || d[0]; return {lev:num(row&&row.leverage), mmr:num(row&&row.mmr)*100, mode: row&&row.openType ? (num(row.openType)===1?"isolated":"cross") : null};
 }
+// Drawdown peak back to the current balance (exchange equity, or the starting amount if not read yet).
+function resetPeak(ex){ S.exPeak=S.exPeak||{}; const a=accounts()[ex], sc=(S.settings.startCap||{})[ex];
+  const now = a ? acctTotal(a) : (sc ? sc.amt : 0); if(now>0) S.exPeak[ex]=now; else delete S.exPeak[ex]; }
 // Starting capital, recorded per exchange: profit is measured from it.
 const startCap = ex => (S.settings.startCap||{})[ex||tradeEx()] || null;
 const capDate = sc => new Date(sc.at).toLocaleDateString([], {month:"short", day:"numeric", year:"numeric"});
@@ -1340,12 +1346,25 @@ function newTradeSheet(pre, opts){
   $("n-pair").addEventListener("focus",showSugg);
   sugg.addEventListener("click",e=>{ const b=e.target.closest("[data-sp]"); if(!b) return;
     $("n-pair").value=b.dataset.sp; sugg.dataset.picked=b.dataset.sp.replace("/",""); sugg.hidden=true;
-    const px=parseFloat(b.dataset.spx);
-    if(px>0 && !$("n-entry").value){ $("n-entry").value=px; const m=$("n-livemsg"); m.hidden=false; m.textContent=`Entry set to the live price ${price(px)}. Change it if you're using a limit price.`; }
-    levFromMexc(); upd(); });
+    pairChanged(parseFloat(b.dataset.spx)); levFromMexc(); upd(); });
+  $("n-pair").addEventListener("change",()=>pairChanged(null));
+  $("n-pair").addEventListener("input",()=>upd());
   document.addEventListener("click",e=>{ if(!e.target.closest("#n-sugg") && e.target.id!=="n-pair" && sugg) sugg.hidden=true; });
   if(pre.lev){ ui.sheet.exLev=pre.lev; ui.sheet.levNote=`From your open ${xn} position`; levHint(); } else { levHint(); if($("n-pair").value) levFromMexc(); }
   $("ntf").addEventListener("submit",e=>{ e.preventDefault(); if(!ui.sheet.calc) saveNew(); });
+  // A different coin needs its own prices: set the entry to its live price and clear the old coin's stop.
+  const pairKey=()=>{ const x=splitPair($("n-pair").value); return x? x.b+x.q : ""; };
+  ui.sheet.pricedPair = $("n-pair").value ? pairKey() : null;
+  async function pairChanged(px){
+    const key=pairKey(); if(!key || key===ui.sheet.pricedPair) return;
+    const hadCoin=!!ui.sheet.pricedPair; ui.sheet.pricedPair=key;
+    const m=$("n-livemsg"); m.hidden=false;
+    if(hadCoin && $("n-sl").value){ $("n-sl").value=""; }
+    if(!(px>0)){ m.textContent="Getting the live price…"; try{ px=await livePrice(ui.sheet.ex, ui.sheet.market, $("n-pair").value); }catch(e){ px=0; } }
+    if(!ui.sheet || pairKey()!==key) return; // you moved on to another coin
+    if(px>0){ $("n-entry").value=px; m.textContent=`Entry set to the live ${pairLabel(key)} price ${price(px)}.${hadCoin?" Enter the stop loss for this coin.":""} Change the entry if you're using a limit price.`; }
+    else { $("n-entry").value=""; m.textContent=`Couldn't get the ${pairLabel(key)} price. Type the entry.`; }
+    upd(); }
   upd();
 }
 // Numbers typed with a comma as the decimal point (0,6818) read the same as 0.6818.
@@ -1595,6 +1614,7 @@ document.addEventListener("click",e=>{
   else if(act==="doReset"){ forget(S.trades); const keep={accounts:S.accounts, exPeak:S.exPeak, ignoreKeys:S.ignoreKeys, ignoreOpen:S.ignoreOpen};
     S=Object.assign({settings:S.settings, trades:[], sample:false}, keep);
     S.settings.logSince=Date.now(); // nothing that closed before now is imported again
+    ACCT_EX.forEach(k=>{ if(accounts()[k]) resetPeak(k); });
     persist(); render(); toast("All trades deleted. Only trades from now on are logged."); }
   else if(act==="exportCsv") shareOrShow("Export CSV", csv(), "risk-ledger.csv");
   else if(act==="backup") shareOrShow("Back up", JSON.stringify({app:"risk-ledger",v:1,settings:S.settings,trades:S.trades.map(({_R,_pnl,...t})=>t)}), "Keep this text somewhere safe");
@@ -1606,10 +1626,12 @@ document.addEventListener("click",e=>{
   else if(act==="connect") connectSheet(a.dataset.ex);
   else if(act==="saveKey") saveKeyFlow();
   else if(act==="editCap") capitalPrompt(tradeEx());
+  else if(act==="resetPeak"){ resetPeak(tradeEx()); persist(); render(); toast(`Peak reset to ${money((S.exPeak||{})[tradeEx()]||0)} · drawdown 0%`); }
   else if(act==="capSave"||act==="capSkip"){ const sh=ui.sheet, then=sh.then;
     if(act==="capSave"){ const v=parseFloat($("cap-in").value), err=$("cap-err");
       if(!(v>0)){ err.hidden=false; err.textContent="Enter an amount above 0."; return; }
       S.settings.startCap=S.settings.startCap||{}; S.settings.startCap[sh.ex]={amt:+v.toFixed(2), at:Date.now()};
+      resetPeak(sh.ex); // a new start: the drawdown brake measures from here
       if(S.sample){ S.trades=[]; S.sample=false; } persist(); }
     closeSheet();
     if(then) then(); else toast(`Starting capital recorded: ${money(startCap(sh.ex).amt)} ${S.settings.currency}`); }
