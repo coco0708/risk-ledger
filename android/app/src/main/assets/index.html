@@ -128,6 +128,11 @@ nav.tabs button[aria-selected="true"]{color:var(--accent)}
 .sheet header{display:flex;align-items:center;gap:8px;position:sticky;top:0;background:var(--bg);padding:10px 0;z-index:2}
 .sheet header h2{font-size:18px;margin:0;flex:1}
 .calc-card{padding-top:0}
+.chart{position:relative;height:300px;border-radius:12px;background:var(--surface);border:1px solid var(--line);overflow:hidden;touch-action:none}
+.chart canvas{display:block}
+.chart .empty{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;color:var(--ink-3);padding:16px}
+.alrow b{font-weight:600}
+.alrow.hit{opacity:.75}
 .calc-card header{display:flex;flex-wrap:wrap;align-items:center;gap:6px;position:sticky;top:0;background:var(--surface);padding:14px 0 12px;margin-bottom:12px;border-bottom:1px solid var(--line);z-index:2}
 .calc-card header h2{font-size:17px;margin:0;flex:1}
 /* floating card: the calculator sits over the dashboard */
@@ -741,6 +746,165 @@ const openPnl = (t, p) => t.sizeNow ? banked(t) + (p - t.entry) * t.sizeNow * (t
 const openR = (t, p) => { const u=openPnl(t,p); return t.riskUsd>0 && u!=null ? u/t.riskUsd : stopR(t,p); }; // works for long and short
 function liveTxt(t, p){ const r=openR(t,p), u=openPnl(t,p); return r!=null ? {cls:cls(r), txt:"now "+R(r)} : u!=null ? {cls:cls(u), txt:"now "+smoney(u)} : {cls:"", txt:""}; }
 
+/* ---------- price alerts (watched in the background by the Android app) ---------- */
+const pxRound = p => { const a=Math.abs(p), d=a>=1000?2 : a>=1?4 : a>=0.01?6 : 8; return +(+p).toFixed(d); };
+function syncAlertsNative(){
+  if(!(Native && Native.setAlerts)) return;
+  try{ Native.setAlerts(JSON.stringify((S.alerts||[]).filter(a=>!a.hitAt).map(({id,ex,b,q,pair,cond,price,note})=>({id,ex,b,q,pair,cond,price,note})))); }catch(e){}
+}
+// Alerts the background watcher saw hit: mark them here and say so.
+function pollAlertHits(){
+  if(!(Native && Native.getAlertHits) || !(S.alerts||[]).length) return;
+  let hits={}; try{ hits=JSON.parse(Native.getAlertHits()||"{}"); }catch(e){ return; }
+  const fresh=S.alerts.filter(a=>!a.hitAt && hits[a.id]);
+  if(!fresh.length) return;
+  fresh.forEach(a=>{ a.hitAt=hits[a.id].at; a.hitPrice=hits[a.id].price; });
+  persist();
+  const a=fresh[0]; toast(`🔔 ${a.pair} ${a.cond} ${price(a.price)} · now ${price(a.hitPrice)}${fresh.length>1?` (+${fresh.length-1} more)`:""}`);
+  if($("sheet").hidden && ui.tab==="markets") render();
+  else if(ui.sheet && ui.sheet.kind==="chart"){ paintChartAlerts(); drawChart(); }
+}
+function addAlert(ex, pair, cond, priceV, note){
+  const x=splitPair(pair); if(!x) return null;
+  const a={id:uid(), ex, b:x.b, q:x.q, pair:x.b+"/"+x.q, cond, price:pxRound(priceV), note:(note||"").trim().slice(0,60), created:Date.now()};
+  S.alerts=S.alerts||[]; S.alerts.push(a); persist(); syncAlertsNative();
+  if(Native && Native.notifyAllowed && !Native.notifyAllowed() && Native.requestNotify) Native.requestNotify();
+  return a;
+}
+function delAlert(id){ S.alerts=(S.alerts||[]).filter(a=>a.id!==id); persist(); syncAlertsNative(); }
+const livePx = (ex, pair) => { const r=(allCache[ex+"|futures"]||{rows:[]}).rows.find(r=>r.pair===pair); return r? r.p : null; };
+function alertRow(a, compact){
+  const now=livePx(a.ex, a.pair), away = now && !a.hitAt ? (a.price/now-1)*100 : null;
+  const when=ms=>new Date(ms).toLocaleString([], {month:"short", day:"numeric", hour:"2-digit", minute:"2-digit"});
+  return `<div class="kv alrow${a.hitAt?" hit":""}"><span class="k">${compact?"":`<b>${esc(a.pair)}</b> `}${a.cond==="above"?"above":"below"} <span class="num">${price(a.price)}</span>
+      <br><span style="font-size:12px;color:var(--ink-3)" ${a.hitAt?"":`data-alnow="${esc(a.id)}"`}>${a.hitAt?`🔔 hit at ${price(a.hitPrice)} · ${when(a.hitAt)}`:(now?`now ${price(now)} · ${Math.abs(away).toFixed(2)}% away`:"waiting")}${a.note?` · ${esc(a.note)}`:""}${compact||a.ex===tradeEx()?"":` · ${EX[a.ex].name}`}</span></span>
+    <span class="v"><button class="linkbtn" data-act="delAlert" data-id="${esc(a.id)}">${a.hitAt?"Clear":"Delete"}</button></span></div>`;
+}
+function alertsCard(){
+  const list=(S.alerts||[]).slice().sort((a,b)=>(!!a.hitAt-!!b.hitAt) || (b.hitAt||0)-(a.hitAt||0) || a.pair.localeCompare(b.pair));
+  const waiting=list.filter(a=>!a.hitAt).length, hit=list.length-waiting;
+  const blocked = Native && Native.notifyAllowed && !Native.notifyAllowed();
+  return `<section class="card">
+    <div class="sechead"><div class="label">Price alerts</div><span class="chip ${waiting?"up":"mute"}">${waiting} active</span></div>
+    ${blocked && waiting ? `<div class="warnbox" style="margin-top:8px">Notifications are off, so alerts can't reach you when the app is closed. <button class="linkbtn" data-act="allowNotify">Allow</button></div>`:""}
+    ${list.length ? list.map(a=>alertRow(a)).join("") : `<div class="note" style="margin-top:6px">Tap a coin below to open its chart and set an alert.</div>`}
+    ${hit>1?`<button class="linkbtn" data-act="clearHits" style="margin-top:6px">Clear ${hit} hit alerts</button>`:""}
+  </section>`;
+}
+
+/* ---------- chart: candles from the trading exchange, with alert / entry / stop lines ---------- */
+const IVS=[["5m",300],["15m",900],["1h",3600],["4h",14400],["1d",86400]];
+const KL = {
+  mexc:(b,q,iv,sec,n)=>{ const m={"5m":"Min5","15m":"Min15","1h":"Min60","4h":"Hour4","1d":"Day1"}[iv], e=Math.floor(Date.now()/1000), s=e-sec*n;
+    const path=`/api/v1/contract/kline/${b}_${q}?interval=${m}&start=${s}&end=${e}`;
+    return [["https://contract.mexc.com"+path,"https://futures.mexc.com"+path], j=>{ const d=j.data||{}; return (d.time||[]).map((t,i)=>({t:t*1000, o:num(d.open[i]), h:num(d.high[i]), l:num(d.low[i]), c:num(d.close[i])})); }]; },
+  binance:(b,q,iv,sec,n)=>[[`https://fapi.binance.com/fapi/v1/klines?symbol=${b}${q}&interval=${iv}&limit=${n}`], j=>(Array.isArray(j)?j:[]).map(k=>({t:+k[0], o:num(k[1]), h:num(k[2]), l:num(k[3]), c:num(k[4])}))],
+  bybit:(b,q,iv,sec,n)=>{ const m={"5m":"5","15m":"15","1h":"60","4h":"240","1d":"D"}[iv], path=`/v5/market/kline?category=linear&symbol=${b}${q}&interval=${m}&limit=${n}`;
+    return [["https://api.bybit.com"+path,"https://api.bytick.com"+path], j=>((j.result||{}).list||[]).map(k=>({t:+k[0], o:num(k[1]), h:num(k[2]), l:num(k[3]), c:num(k[4])})).reverse()]; },
+  okx:(b,q,iv,sec,n)=>{ const m={"5m":"5m","15m":"15m","1h":"1H","4h":"4H","1d":"1D"}[iv], path=`/api/v5/market/candles?instId=${b}-${q}-SWAP&bar=${m}&limit=${n}`;
+    return [["https://www.okx.com"+path,"https://aws.okx.com"+path], j=>(j.data||[]).map(k=>({t:+k[0], o:num(k[1]), h:num(k[2]), l:num(k[3]), c:num(k[4])})).reverse()]; },
+};
+async function klines(ex, pair, iv, n){
+  const x=splitPair(pair), sec=IVS.find(v=>v[0]===iv)[1], [urls, pick]=KL[ex](x.b, x.q, iv, sec, n); let last="No candles returned.";
+  for(const u of urls){ try{ const k=pick(JSON.parse(await httpGet(u))).filter(c=>c.h>0 && c.l>0); if(k.length) return k.slice(-n); }catch(e){ last=(e&&e.message||String(e)).slice(0,120); } }
+  throw new Error(last);
+}
+function openChart(pair, ex){
+  ex=ex||tradeEx(); const x=splitPair(pair), p=x.b+"/"+x.q, now=livePx(ex,p);
+  ui.sheet={kind:"chart", pair:p, ex, iv:S.settings.chartIv||"15m", k:[], at:0, cond:"above", cross:null};
+  ui.chart=ui.sheet;
+  openSheet(`<header><h2>${esc(p)} <span style="font-size:13px;color:var(--ink-3);font-weight:600">${EX[ex].name} Futures</span></h2><button class="x" data-act="close" aria-label="Close">×</button></header>
+  <div class="form">
+    <div class="sechead" style="margin:0"><span class="num" id="ch-px" style="font-size:24px;font-weight:600">${now?price(now):"—"}</span>
+      <div class="seg" id="ch-iv" style="width:auto">${IVS.map(([v])=>`<button type="button" data-iv="${v}" aria-pressed="${ui.sheet.iv===v}" style="padding:6px 9px;font-size:13px">${v==="1d"?"1D":v}</button>`).join("")}</div></div>
+    <div class="chart" id="ch-box"><canvas id="ch-cv"></canvas><div class="empty" id="ch-msg">${Native?"Loading chart…":"Charts work in the Android app."}</div></div>
+    <div class="note" id="ch-hint" style="margin:0">Tap the chart to put an alert at that price.</div>
+    <section class="card" style="padding:12px 14px">
+      <div class="label">Price alert</div>
+      <div class="two" style="margin-top:8px">
+        <div class="seg" id="al-cond"><button type="button" data-cond="above" aria-pressed="true">Above</button><button type="button" data-cond="below" aria-pressed="false">Below</button></div>
+        <div class="field"><input id="al-px" class="num" inputmode="decimal" placeholder="Price" value="" aria-label="Alert price"></div>
+      </div>
+      <div class="field" style="margin-top:8px"><input id="al-note" placeholder="Note (optional)" maxlength="60" aria-label="Note"></div>
+      <div id="al-err" class="err" hidden></div>
+      <button class="btn" data-act="addAlert" style="margin-top:8px">Add alert</button>
+      <div id="al-list"></div>
+    </section>
+    <button class="btn ghost" data-act="chartSize">Position size for ${esc(p)}</button>
+  </div>`);
+  const setCond=c=>{ ui.sheet.cond=c; $("al-cond").querySelectorAll("button").forEach(b=>b.setAttribute("aria-pressed",String(b.dataset.cond===c))); };
+  $("al-cond").addEventListener("click",e=>{ const b=e.target.closest("[data-cond]"); if(b) setCond(b.dataset.cond); });
+  $("al-px").addEventListener("input",()=>{ const v=numIn("al-px"), last=lastPx(); if(v>0 && last) setCond(v>=last?"above":"below"); drawChart(); });
+  $("ch-iv").addEventListener("click",e=>{ const b=e.target.closest("[data-iv]"); if(!b) return; ui.sheet.iv=b.dataset.iv; S.settings.chartIv=b.dataset.iv; persist();
+    $("ch-iv").querySelectorAll("button").forEach(x=>x.setAttribute("aria-pressed",String(x===b))); ui.sheet.k=[]; $("ch-msg").hidden=false; $("ch-msg").textContent="Loading chart…"; drawChart(); loadChart(); });
+  // touch the chart: a crosshair follows your finger; letting go puts that price in the alert box
+  const cv=$("ch-cv"), priceAt=ev=>{ const r=cv.getBoundingClientRect(), y=(ev.touches?ev.touches[0].clientY:ev.clientY)-r.top; return ui.sheet.yToP ? ui.sheet.yToP(y) : null; };
+  const move=ev=>{ const p=priceAt(ev); if(p>0){ ui.sheet.cross=p; drawChart(); } };
+  cv.addEventListener("pointerdown",ev=>{ cv.setPointerCapture(ev.pointerId); move(ev); });
+  cv.addEventListener("pointermove",ev=>{ if(ev.buttons||ev.pointerType==="touch") move(ev); });
+  cv.addEventListener("pointerup",()=>{ const p=ui.sheet.cross; if(p>0){ $("al-px").value=pxRound(p); const last=lastPx(); if(last) setCond(p>=last?"above":"below");
+    $("ch-hint").textContent=`Alert price set to ${price(pxRound(p))}. Tap "Add alert" to save it.`; } ui.sheet.cross=null; drawChart(); });
+  paintChartAlerts(); loadChart();
+}
+const lastPx = () => { const k=(ui.sheet&&ui.sheet.k)||[]; return k.length? k[k.length-1].c : livePx(ui.sheet.ex, ui.sheet.pair); };
+async function loadChart(){
+  const sh=ui.sheet; if(!sh || sh.kind!=="chart" || !Native) return;
+  const want=sh.pair+sh.iv;
+  try{ const k=await klines(sh.ex, sh.pair, sh.iv, 90); if(ui.sheet!==sh || sh.pair+sh.iv!==want) return;
+    sh.k=k; sh.at=Date.now(); const m=$("ch-msg"); if(m) m.hidden=true;
+    const px=$("ch-px"), last=k[k.length-1].c, first=k[0].o; if(px){ px.textContent=price(last); }
+    if(!$("al-px").value) $("al-px").value=pxRound(last);
+    drawChart(); }
+  catch(e){ const m=$("ch-msg"); if(m && ui.sheet===sh && !sh.k.length){ m.hidden=false; m.innerHTML=`Couldn't load the chart.<br><span style="font-size:12px">${esc(e.message||e)}</span>`; } }
+}
+function paintChartAlerts(){
+  const box=$("al-list"), sh=ui.sheet; if(!box || !sh) return;
+  const mine=(S.alerts||[]).filter(a=>a.pair===sh.pair && a.ex===sh.ex);
+  box.innerHTML = mine.length ? `<div style="margin-top:6px">${mine.map(a=>alertRow(a,true)).join("")}</div>` : "";
+}
+function drawChart(){
+  const sh=ui.sheet, box=$("ch-box"), cv=$("ch-cv"); if(!sh || sh.kind!=="chart" || !box || !cv) return;
+  const W=box.clientWidth, H=box.clientHeight, dpr=window.devicePixelRatio||1;
+  cv.width=W*dpr; cv.height=H*dpr; cv.style.width=W+"px"; cv.style.height=H+"px";
+  const g=cv.getContext("2d"); g.setTransform(dpr,0,0,dpr,0,0); g.clearRect(0,0,W,H);
+  const k=sh.k; if(!k.length){ sh.yToP=null; return; }
+  const css=getComputedStyle(document.documentElement), col=v=>css.getPropertyValue(v).trim();
+  const UP=col("--up"), DN=col("--down"), INK3=col("--ink-3"), INK2=col("--ink-2"), LINE=col("--line"), WARN=col("--warn"), SURF=col("--surface");
+  const last=k[k.length-1].c, padR=64, padT=12, padB=20, plotW=W-padR, plotH=H-padT-padB;
+  // levels to show: alerts, and entry / stop of an open trade on this coin (when within reach of the candles)
+  const lv=[];
+  (S.alerts||[]).filter(a=>a.pair===sh.pair && a.ex===sh.ex && !a.hitAt).forEach(a=>lv.push({p:a.price, c:WARN, t:"Alert"}));
+  const typed=numIn("al-px"); if(typed>0 && Math.abs(typed/last-1)>0.0005 && !lv.some(l=>Math.abs(l.p-typed)<1e-12)) lv.push({p:typed, c:WARN, t:"New", dash:[2,3]});
+  const open=S.trades.find(t=>!t.outcome && pairLabel(t.pair)===sh.pair);
+  if(open){ lv.push({p:open.entry, c:INK2, t:"Entry"}); if(open.sl0||open.sl) lv.push({p:open.sl0||open.sl, c:DN, t:"SL"}); }
+  let lo=Math.min(...k.map(c=>c.l)), hi=Math.max(...k.map(c=>c.h));
+  lv.forEach(l=>{ if(l.p>lo*0.75 && l.p<hi*1.25){ lo=Math.min(lo,l.p); hi=Math.max(hi,l.p); } });
+  if(sh.cross){ lo=Math.min(lo,sh.cross); hi=Math.max(hi,sh.cross); }
+  const pad=(hi-lo)*0.06||hi*0.01; lo-=pad; hi+=pad;
+  const y=p=>padT+(hi-p)/(hi-lo)*plotH; sh.yToP=yy=>hi-(Math.min(Math.max(yy,padT),padT+plotH)-padT)/plotH*(hi-lo);
+  g.font="10px "+css.getPropertyValue("--f-num"); g.textBaseline="middle";
+  // grid + price scale
+  for(let i=0;i<=4;i++){ const p=lo+(hi-lo)*i/4, yy=y(p); g.strokeStyle=LINE; g.lineWidth=1; g.beginPath(); g.moveTo(0,yy); g.lineTo(plotW,yy); g.stroke(); g.fillStyle=INK3; g.fillText(price(p),plotW+6,yy); }
+  // candles
+  const cw=plotW/k.length, bw=Math.max(1,cw*0.66);
+  k.forEach((c,i)=>{ const x=i*cw+cw/2, upc=c.c>=c.o; g.strokeStyle=g.fillStyle=upc?UP:DN; g.lineWidth=1;
+    g.beginPath(); g.moveTo(x,y(c.h)); g.lineTo(x,y(c.l)); g.stroke();
+    const t=y(Math.max(c.o,c.c)), b=y(Math.min(c.o,c.c)); g.fillRect(x-bw/2,t,bw,Math.max(1,b-t)); });
+  // time labels
+  g.fillStyle=INK3; g.textBaseline="alphabetic";
+  const daily=sh.iv==="1d"||sh.iv==="4h", fmt=t=>new Date(t).toLocaleString([], daily?{month:"short",day:"numeric"}:{hour:"2-digit",minute:"2-digit"});
+  [0.12,0.5,0.88].forEach(f=>{ const i=Math.floor(f*(k.length-1)), s=fmt(k[i].t), w=g.measureText(s).width; g.fillText(s, Math.min(Math.max(i*cw+cw/2-w/2,0),plotW-w), H-5); });
+  g.textBaseline="middle";
+  // a level line with a tag on the price scale
+  const tag=(p,c,label,dash,solid)=>{ const yy=y(p); if(yy<padT-1||yy>padT+plotH+1) return;
+    g.setLineDash(dash||[5,4]); g.strokeStyle=c; g.lineWidth=1; g.beginPath(); g.moveTo(0,yy); g.lineTo(plotW,yy); g.stroke(); g.setLineDash([]);
+    const s=price(p), w=Math.min(padR-2, g.measureText(s).width+8); g.fillStyle=c; g.fillRect(plotW+1,yy-8,w,16); g.fillStyle=solid?SURF:SURF; g.fillText(s,plotW+5,yy);
+    if(label){ const lw=g.measureText(label).width+8; g.fillStyle=c; g.fillRect(2,yy-8,lw,16); g.fillStyle=SURF; g.fillText(label,6,yy); } };
+  lv.forEach(l=>tag(l.p,l.c,l.t,l.dash));
+  tag(last, k[k.length-1].c>=k[k.length-1].o?UP:DN, "", [2,2], true);
+  if(sh.cross) tag(sh.cross, INK2, "", [1,0]);
+}
+
 /* ---------- second currency ---------- */
 const hasSec = () => S.settings.secondCur && S.settings.secondRate > 0;
 function fmtSec(v){ const st=S.settings; const n=v*st.secondRate;
@@ -1023,7 +1187,7 @@ function viewMarkets(){
     </div>
     <div class="note" id="mk-usdtmsg">${p?`${nm} prices · ${new Date(p.at).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"})}. The outlined one converts your amounts.`: Native?`Pull down to load ${nm}'s prices.`:"Live prices work in the Android app."}</div>
   </section>` : "";
-  return `${header()}${usdt}
+  return `${header()}${alertsCard()}${usdt}
   <div class="note" style="margin:0;font-weight:600;color:var(--ink-2)">${nm} Futures</div>
   <div class="two" hidden>
     <div class="field"><select id="mk-ex" aria-label="Exchange">${EX_ORDER.map(k=>`<option value="${k}" ${ui.mk.ex===k?"selected":""}>${EX[k].name}</option>`).join("")}</select></div>
@@ -1041,6 +1205,8 @@ function paintMarkets(rows){
   let list=rows.filter(r=>!q || (r.b+r.q).includes(q));
   list.sort((a,b)=>{ const pa=pop.indexOf(a.pair), pb=pop.indexOf(b.pair); if(pa!==pb) return (pa<0?999:pa)-(pb<0?999:pb);
     const qa=a.q==="USDT"?0:1, qb=b.q==="USDT"?0:1; if(qa!==qb) return qa-qb; if(q){ const sa=a.b.startsWith(q)?0:1, sb=b.b.startsWith(q)?0:1; if(sa!==sb) return sa-sb; } return a.pair.localeCompare(b.pair); });
+  document.querySelectorAll("[data-alnow]").forEach(el=>{ const al=(S.alerts||[]).find(x=>x.id===el.dataset.alnow), now=al&&livePx(al.ex,al.pair);
+    if(al && now){ const rest=el.textContent.includes(" · ") ? el.textContent.split(" · ").slice(2).join(" · ") : ""; el.textContent=`now ${price(now)} · ${Math.abs((al.price/now-1)*100).toFixed(2)}% away${rest?" · "+rest:""}`; } });
   const at=(allCache[ui.mk.ex+"|"+ui.mk.market]||{}).at;
   $("mk-info").innerHTML = `<span class="livedot"></span>Live · ${at?new Date(at).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit",second:"2-digit"}):""} · ${rows.length.toLocaleString()} pairs on ${EX[ui.mk.ex].name} ${mktLabel(ui.mk.market)}${q?` · ${list.length} match`:""}`;
   const shown=list.slice(0,80);
@@ -1695,21 +1861,21 @@ document.addEventListener("click",e=>{
   const tab=e.target.closest("nav.tabs button"); if(tab){ goTab(tab.dataset.tab); return; }
   const f=e.target.closest("[data-filter]"); if(f){ ui.filter=f.dataset.filter; render(); return; }
   const o=e.target.closest("[data-open]"); if(o){ tradeSheet(o.dataset.open); return; }
-  const mp=e.target.closest("[data-mpair]"); if(mp){ ui.calcPre={ex:ui.mk.ex, market:ui.mk.market, pair:mp.dataset.mpair, entry:+mp.dataset.mpx}; goTab("calc"); return; }
+  const mp=e.target.closest("[data-mpair]"); if(mp){ openChart(mp.dataset.mpair, ui.mk.ex); return; }
   const ps=e.target.closest("[data-pos]"); if(ps){ const p=ui.posList[+ps.dataset.pos]; if(!p) return;
     const logged=S.trades.find(t=>!t.outcome && t.posKey && t.posKey===p.key); if(logged){ tradeSheet(logged.id); return; }
     newTradeSheet({ex:p.ex, market:"futures", pair:p.pair, entry:p.entry, dir:p.dir, lev:p.lev, sl:p.sl, risk:p.sl? p.size*Math.abs(p.entry-p.sl) : null, posKey:p.key, tps:p.tps||[]}); return; }
   const a=e.target.closest("[data-act]"); if(!a) return;
   const act=a.dataset.act;
   if(act==="close") closeSheet();
-  else if(act==="clearSample"){ S={settings:S.settings, trades:[], sample:false, accounts:S.accounts, exPeak:S.exPeak, ignoreKeys:S.ignoreKeys, ignoreOpen:S.ignoreOpen}; persist(); render(); toast("Sample trades cleared"); }
+  else if(act==="clearSample"){ S={settings:S.settings, trades:[], sample:false, accounts:S.accounts, exPeak:S.exPeak, ignoreKeys:S.ignoreKeys, ignoreOpen:S.ignoreOpen, alerts:S.alerts}; persist(); render(); toast("Sample trades cleared"); }
   else if(act==="reopen"){ const t=S.trades.find(x=>x.id===ui.sheet.id); t.outcome=null; t.manualR=null; t.closedAt=null; persist(); closeSheet(); toast("Trade reopened"); }
   else if(act==="askDel"){ $("delZone").innerHTML=`<div class="confirm"><button class="btn ghost" type="button" data-act="close">Keep it</button><button class="btn danger" type="button" data-act="doDel">Yes, delete</button></div>`; }
   else if(act==="doDel"){ forget(S.trades.filter(x=>x.id===ui.sheet.id));
     S.trades=S.trades.filter(x=>x.id!==ui.sheet.id); persist(); closeSheet(); toast("Trade deleted"); }
   else if(act==="askReset"){ $("dangerZone").innerHTML=`<div class="confirm"><button class="btn ghost" data-act="cancelReset">Cancel</button><button class="btn danger" data-act="doReset">Delete everything</button></div>`; }
   else if(act==="cancelReset") render();
-  else if(act==="doReset"){ forget(S.trades); const keep={accounts:S.accounts, exPeak:S.exPeak, ignoreKeys:S.ignoreKeys, ignoreOpen:S.ignoreOpen};
+  else if(act==="doReset"){ forget(S.trades); const keep={accounts:S.accounts, exPeak:S.exPeak, ignoreKeys:S.ignoreKeys, ignoreOpen:S.ignoreOpen, alerts:S.alerts};
     S=Object.assign({settings:S.settings, trades:[], sample:false}, keep);
     S.settings.logSince=Date.now(); // nothing that closed before now is imported again
     ACCT_EX.forEach(k=>{ if(accounts()[k]) resetPeak(k); });
@@ -1724,6 +1890,15 @@ document.addEventListener("click",e=>{
   else if(act==="connect") connectSheet(a.dataset.ex);
   else if(act==="saveKey") saveKeyFlow();
   else if(act==="excel") downloadExcel();
+  else if(act==="addAlert"){ const sh=ui.sheet, v=numIn("al-px"), err=$("al-err");
+    if(!(v>0)){ err.hidden=false; err.textContent="Enter the alert price."; return; }
+    const last=lastPx(); if(last && ((sh.cond==="above" && v<=last) || (sh.cond==="below" && v>=last))){ err.hidden=false; err.textContent=`Price is already ${sh.cond} ${price(v)} (now ${price(last)}). Pick the other side or another price.`; return; }
+    err.hidden=true; const al=addAlert(sh.ex, sh.pair, sh.cond, v, $("al-note").value);
+    $("al-note").value=""; paintChartAlerts(); drawChart(); toast(`Alert set: ${al.pair} ${al.cond} ${price(al.price)}`); }
+  else if(act==="delAlert"){ delAlert(a.dataset.id); if(ui.sheet && ui.sheet.kind==="chart"){ paintChartAlerts(); drawChart(); } else render(); }
+  else if(act==="clearHits"){ S.alerts=(S.alerts||[]).filter(x=>!x.hitAt); persist(); syncAlertsNative(); render(); }
+  else if(act==="allowNotify"){ if(Native&&Native.requestNotify) Native.requestNotify(); setTimeout(()=>{ if(ui.tab==="markets"&&$("sheet").hidden) render(); }, 4000); }
+  else if(act==="chartSize"){ const sh=ui.sheet; ui.calcPre={pair:sh.pair, entry:lastPx()}; closeSheet(); goTab("calc"); }
   else if(act==="openSaved"||act==="shareSaved"){ if(Native&&Native.useSaved) Native.useSaved(act==="shareSaved"); }
   else if(act==="editCap") capitalPrompt(tradeEx());
   else if(act==="resetPeak"){ resetPeak(tradeEx()); persist(); render(); toast(`Peak reset to ${money((S.exPeak||{})[tradeEx()]||0)} · drawdown 0%`); }
@@ -1819,6 +1994,7 @@ async function tick(){
     const sheetOpen=!$("sheet").hidden;
     if(!sheetOpen && ui.tab==="markets") await loadMarkets(false);
     else if(!sheetOpen && ui.tab==="trades"){ await Promise.all([refreshLive(S.trades), refreshPositions()]); paintLive(); }
+    else if(sheetOpen && ui.sheet && ui.sheet.kind==="chart"){ if(Date.now()-(ui.sheet.at||0)>5000) await loadChart(); }
     else if(sheetOpen && ui.sheet && ui.sheet.kind==="trade"){ await refreshLive(S.trades.filter(t=>t.id===ui.sheet.id)); paintLive(); }
   }catch(e){} finally{ ticking=false; }
 }
@@ -1828,7 +2004,8 @@ setInterval(async()=>{ if(mirrorBusy || !Native || document.hidden || !syncList(
   try{ const before=JSON.stringify(S.trades.map(t=>[t.id,t.outcome,t.sl,t.sizeNow,t.entry,t.lev,t.tpHits])); await syncAccounts();
     if(before!==JSON.stringify(S.trades.map(t=>[t.id,t.outcome,t.sl,t.sizeNow,t.entry,t.lev,t.tpHits])) && $("sheet").hidden && ui.tab!=="settings") render(); }
   catch(e){} finally{ mirrorBusy=false; } }, 20000);
-document.addEventListener("visibilitychange", ()=>{ if(!document.hidden) tick(); });
+document.addEventListener("visibilitychange", ()=>{ if(!document.hidden){ tick(); pollAlertHits(); } });
+S.alerts=S.alerts||[]; syncAlertsNative(); pollAlertHits(); setInterval(()=>{ if(!document.hidden) pollAlertHits(); }, 5000);
 
 // Pull down from the top of any tab to refresh: balances, positions and trades from the exchange,
 // plus prices on Markets and the USDT rate.

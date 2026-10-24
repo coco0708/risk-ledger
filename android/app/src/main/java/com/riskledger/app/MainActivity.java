@@ -89,6 +89,7 @@ public class MainActivity extends Activity {
         web.addJavascriptInterface(new Store(), "AndroidStore");
         setContentView(web);
         web.loadUrl("file:///android_asset/index.html");
+        AlertService.sync(this); // resume watching price alerts (after a reboot or the app being closed)
     }
 
     @Override
@@ -165,7 +166,7 @@ public class MainActivity extends Activity {
         }
     }
 
-    private static Res request(String method, String url, Map<String, String> headers, String body) {
+    static Res request(String method, String url, Map<String, String> headers, String body) {
         if (!url.startsWith("https://")) { Res r = new Res(); r.body = "Only https is allowed"; return r; }
         try {
             return call(plain, method, url, headers, body);
@@ -479,6 +480,37 @@ public class MainActivity extends Activity {
                     return f.getAbsolutePath();
                 }
             } catch (Exception e) { return "ERR:" + e.getMessage(); }
+        }
+
+        /** Price alerts to watch (JSON list), written for the background watcher; starts or stops it. */
+        @JavascriptInterface
+        public void setAlerts(String json) {
+            try {
+                org.json.JSONArray list = new org.json.JSONArray(json);
+                java.util.Set<String> ids = new java.util.HashSet<>();
+                for (int i = 0; i < list.length(); i++) ids.add(list.getJSONObject(i).optString("id"));
+                AlertService.write(AlertService.alertsFile(MainActivity.this), list.toString());
+                // forget hits for alerts that no longer exist
+                JSONObject hits = AlertService.hits(MainActivity.this), kept = new JSONObject();
+                java.util.Iterator<String> it = hits.keys();
+                while (it.hasNext()) { String id = it.next(); if (ids.contains(id)) kept.put(id, hits.get(id)); }
+                AlertService.write(AlertService.hitsFile(MainActivity.this), kept.toString());
+            } catch (Exception ignored) { }
+            AlertService.sync(MainActivity.this);
+        }
+
+        /** Alerts the watcher has seen hit: {id: {at, price}}. */
+        @JavascriptInterface
+        public String getAlertHits() { return AlertService.hits(MainActivity.this).toString(); }
+
+        @JavascriptInterface
+        public boolean notifyAllowed() {
+            return Build.VERSION.SDK_INT < 33 || checkSelfPermission("android.permission.POST_NOTIFICATIONS") == android.content.pm.PackageManager.PERMISSION_GRANTED;
+        }
+
+        @JavascriptInterface
+        public void requestNotify() {
+            if (Build.VERSION.SDK_INT >= 33) runOnUiThread(() -> requestPermissions(new String[]{"android.permission.POST_NOTIFICATIONS"}, 7));
         }
 
         /** Open or share the file saved last. */
