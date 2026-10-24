@@ -119,7 +119,7 @@ button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-vis
 /* tabs */
 nav.tabs{position:fixed;left:0;right:0;bottom:0;background:var(--surface);border-top:1px solid var(--line);display:flex;justify-content:center;padding:6px 8px calc(6px + env(safe-area-inset-bottom,0px));z-index:6}
 nav.tabs .in{display:flex;max-width:520px;width:100%}
-nav.tabs button{flex:1;min-width:0;border:0;background:transparent;padding:8px 2px;display:flex;flex-direction:column;align-items:center;gap:3px;font-size:11px;font-weight:600;color:var(--ink-3);cursor:pointer;white-space:nowrap;letter-spacing:-.01em}
+nav.tabs button{flex:1;min-width:0;border:0;background:transparent;padding:8px 2px;display:flex;flex-direction:column;align-items:center;gap:3px;font-size:11.5px;font-weight:600;color:var(--ink-3);cursor:pointer;white-space:nowrap;letter-spacing:-.01em}
 nav.tabs button svg{width:22px;height:22px}
 nav.tabs button[aria-selected="true"]{color:var(--accent)}
 /* sheet */
@@ -128,15 +128,6 @@ nav.tabs button[aria-selected="true"]{color:var(--accent)}
 .sheet header{display:flex;align-items:center;gap:8px;position:sticky;top:0;background:var(--bg);padding:10px 0;z-index:2}
 .sheet header h2{font-size:18px;margin:0;flex:1}
 .calc-card{padding-top:0}
-.heat{position:relative;width:100%;border-radius:14px;overflow:hidden;background:var(--line)}
-.heat .empty{padding:40px 16px;text-align:center;color:var(--ink-3)}
-.ht{position:absolute;box-sizing:border-box;border:1px solid var(--bg);border-radius:6px;color:var(--ink);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px;overflow:hidden;cursor:pointer;padding:2px;line-height:1.1;font-family:var(--f-ui)}
-.ht b{font-weight:700;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.ht span{font-family:var(--f-num);font-size:.82em;font-weight:600}
-.ht small{font-family:var(--f-num);font-size:.68em;opacity:.8}
-.heatkey{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--ink-3);font-family:var(--f-num)}
-.heatkey i{flex:1;height:8px;border-radius:4px;background:linear-gradient(90deg,var(--down),color-mix(in srgb, var(--down) 18%, var(--surface)))}
-.heatkey i.up{background:linear-gradient(90deg,color-mix(in srgb, var(--up) 18%, var(--surface)),var(--up))}
 .calc-card header{display:flex;flex-wrap:wrap;align-items:center;gap:6px;position:sticky;top:0;background:var(--surface);padding:14px 0 12px;margin-bottom:12px;border-bottom:1px solid var(--line);z-index:2}
 .calc-card header h2{font-size:17px;margin:0;flex:1}
 /* floating card: the calculator sits over the dashboard */
@@ -224,8 +215,7 @@ a.btn{display:block;text-align:center;text-decoration:none}
 <nav class="tabs"><div class="in" role="tablist">
   <button id="t-dash" role="tab" data-tab="dash"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19V5"/><path d="M4 19h16"/><path d="M7 15l4-4 3 3 5-6"/></svg>Dashboard</button>
   <button id="t-trades" role="tab" data-tab="trades"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M8 6h12M8 12h12M8 18h12"/><circle cx="4" cy="6" r="1" fill="currentColor"/><circle cx="4" cy="12" r="1" fill="currentColor"/><circle cx="4" cy="18" r="1" fill="currentColor"/></svg>Trades</button>
-  <button id="t-calc" role="tab" data-tab="calc"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="3" width="14" height="18" rx="2.5"/><path d="M8.5 7h7"/><path d="M8.5 11.5h.01M12 11.5h.01M15.5 11.5h.01M8.5 15h.01M12 15h.01M15.5 15v2.5M8.5 18h.01M12 18h.01"/></svg>Size</button>
-  <button id="t-heat" role="tab" data-tab="heat"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><rect x="3" y="3" width="10" height="10" rx="1.5"/><rect x="15" y="3" width="6" height="6" rx="1.5"/><rect x="15" y="11" width="6" height="10" rx="1.5"/><rect x="3" y="15" width="10" height="6" rx="1.5"/></svg>Heat map</button>
+  <button id="t-calc" role="tab" data-tab="calc"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="3" width="14" height="18" rx="2.5"/><path d="M8.5 7h7"/><path d="M8.5 11.5h.01M12 11.5h.01M15.5 11.5h.01M8.5 15h.01M12 15h.01M15.5 15v2.5M8.5 18h.01M12 18h.01"/></svg>Position size</button>
   <button id="t-markets" role="tab" data-tab="markets"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 4v16M6 8h-2v6h2M12 6v12M12 9h-2v5h2M18 3v15M18 6h-2v8h2"/></svg>Markets</button>
   <button id="t-settings" role="tab" data-tab="settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></svg>Settings</button>
 </div></nav>
@@ -751,77 +741,6 @@ const openPnl = (t, p) => t.sizeNow ? banked(t) + (p - t.entry) * t.sizeNow * (t
 const openR = (t, p) => { const u=openPnl(t,p); return t.riskUsd>0 && u!=null ? u/t.riskUsd : stopR(t,p); }; // works for long and short
 function liveTxt(t, p){ const r=openR(t,p), u=openPnl(t,p); return r!=null ? {cls:cls(r), txt:"now "+R(r)} : u!=null ? {cls:cls(u), txt:"now "+smoney(u)} : {cls:"", txt:""}; }
 
-/* ---------- Heat map: the most-traded USDT futures on the trading exchange ---------- */
-// Each source gives [symbol, last price, 24h change (fraction), 24h turnover in USDT].
-const HEAT = {
-  mexc:   [["https://contract.mexc.com/api/v1/contract/ticker","https://futures.mexc.com/api/v1/contract/ticker"], j=>(j.data||[]).map(x=>[x.symbol, num(x.lastPrice), num(x.riseFallRate), num(x.amount24)])],
-  binance:[["https://fapi.binance.com/fapi/v1/ticker/24hr"], j=>(Array.isArray(j)?j:[]).map(x=>[x.symbol, num(x.lastPrice), num(x.priceChangePercent)/100, num(x.quoteVolume)])],
-  bybit:  [["https://api.bybit.com/v5/market/tickers?category=linear","https://api.bytick.com/v5/market/tickers?category=linear"], j=>((j.result||{}).list||[]).map(x=>[x.symbol, num(x.lastPrice), num(x.price24hPcnt), num(x.turnover24h)])],
-  okx:    [["https://www.okx.com/api/v5/market/tickers?instType=SWAP","https://aws.okx.com/api/v5/market/tickers?instType=SWAP"], j=>(j.data||[]).map(x=>{ const l=num(x.last), o=num(x.open24h); return [x.instId.replace(/-SWAP$/,""), l, o>0? l/o-1 : 0, num(x.volCcy24h)*l]; })],
-};
-let heatData=null; // {ex, rows:[{b,q,pair,p,ch,vol}], at}
-async function loadHeat(force){
-  const ex=tradeEx(); if(!force && heatData && heatData.ex===ex && Date.now()-heatData.at<15000) return heatData;
-  const [urls, pick]=HEAT[ex]; let last="No prices returned.";
-  for(const u of urls){
-    try{ const rows=pick(JSON.parse(await httpGet(u))).map(([sym,p,ch,vol])=>{ const x=splitPair(sym); return x && x.q==="USDT" && p>0 && vol>0 && !STABLE.has(x.b) ? {b:x.b, q:x.q, pair:x.b+"/"+x.q, p, ch, vol} : null; }).filter(Boolean);
-      if(!rows.length) throw new Error("No prices returned.");
-      heatData={ex, rows, at:Date.now()}; return heatData; }catch(e){ last=(e&&e.message||String(e)).slice(0,120); }
-  }
-  throw new Error(last);
-}
-// Squarified treemap: lays out areas in rows that keep tiles as close to square as possible.
-function squarify(items, x, y, w, h){
-  const out=[], total=items.reduce((s,i)=>s+i.a,0); if(!total) return out;
-  const scale=w*h/total; let list=items.map(i=>({...i, a:i.a*scale}));
-  const worst=(row,side)=>{ const s=row.reduce((t,r)=>t+r.a,0), mx=Math.max(...row.map(r=>r.a)), mn=Math.min(...row.map(r=>r.a)); return Math.max(side*side*mx/(s*s), (s*s)/(side*side*mn)); };
-  while(list.length){
-    const side=Math.min(w,h); let row=[list[0]], i=1;
-    while(i<list.length && worst([...row,list[i]],side) <= worst(row,side)){ row.push(list[i]); i++; }
-    const s=row.reduce((t,r)=>t+r.a,0);
-    if(w>=h){ const cw=s/h; let cy=y; row.forEach(r=>{ const ch=r.a/cw; out.push({...r, x, y:cy, w:cw, h:ch}); cy+=ch; }); x+=cw; w-=cw; }
-    else { const rh=s/w; let cx=x; row.forEach(r=>{ const cw=r.a/rh; out.push({...r, x:cx, y, w:cw, h:rh}); cx+=cw; }); y+=rh; h-=rh; }
-    list=list.slice(i);
-  }
-  return out;
-}
-const HEAT_N=[30,60,100];
-function viewHeat(){
-  ui.heat=ui.heat||{n:60};
-  return `${header()}
-  <div class="sechead" style="margin:0"><div class="note" style="margin:0;font-weight:600;color:var(--ink-2)">${exName()} Futures · 24h</div>
-    <div class="seg" id="hm-n" style="width:auto">${HEAT_N.map(n=>`<button data-hn="${n}" aria-pressed="${ui.heat.n===n}" style="padding:6px 10px;white-space:nowrap;font-size:13.5px">Top ${n}</button>`).join("")}</div></div>
-  <div id="hm-info" class="note" style="margin:0"></div>
-  <div class="heat" id="hm"><div class="empty">${Native?"Loading…":"Live prices work in the Android app."}</div></div>
-  <div class="heatkey"><span>−10%</span><i></i><span>0</span><i class="up"></i><span>+10%</span></div>
-  <div class="note" style="margin:0">Tile size: 24h trading volume. Color: 24h price change. Tap a coin to size a trade on it.</div>`;
-}
-function paintHeat(){
-  const box=$("hm"); if(!box || !heatData) return;
-  const top=heatData.rows.slice().sort((a,b)=>b.vol-a.vol).slice(0, ui.heat.n);
-  const W=box.clientWidth||358, H=Math.round(Math.min(Math.max(W*1.35, 420), window.innerHeight-230));
-  box.style.height=H+"px";
-  // area grows with the square root of volume, so BTC doesn't crowd every other coin off the map
-  const tiles=squarify(top.map(r=>({...r, a:Math.sqrt(r.vol)})), 0, 0, W, H);
-  const ups=top.filter(r=>r.ch>0).length;
-  $("hm-info").innerHTML=`<span class="livedot"></span>${new Date(heatData.at).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit",second:"2-digit"})} · ${ups} up · ${top.length-ups} down of the top ${top.length} by volume`;
-  box.innerHTML=tiles.map(t=>{ const k=Math.min(Math.abs(t.ch)/0.10,1), mix=Math.round(18+k*72), col=t.ch>=0?"var(--up)":"var(--down)";
-    const big=t.w>70&&t.h>46, mid=t.w>40&&t.h>26, fs=Math.max(9, Math.min(20, Math.sqrt(t.w*t.h)/5.2));
-    return `<button class="ht" data-hpair="${esc(t.pair)}" data-hpx="${t.p}" style="left:${t.x.toFixed(1)}px;top:${t.y.toFixed(1)}px;width:${t.w.toFixed(1)}px;height:${t.h.toFixed(1)}px;background:color-mix(in srgb, ${col} ${mix}%, var(--surface));font-size:${fs.toFixed(1)}px" aria-label="${esc(t.b)} ${(t.ch*100).toFixed(2)}%">
-      ${mid?`<b>${esc(t.b)}</b>`:""}${mid?`<span>${t.ch>=0?"+":""}${(t.ch*100).toFixed(2)}%</span>`:""}${big?`<small>${price(t.p)}</small>`:""}</button>`; }).join("");
-}
-async function refreshHeat(force){
-  if(!Native) return;
-  try{ await loadHeat(force); if(ui.tab==="heat") paintHeat(); }
-  catch(e){ const box=$("hm"); if(box && !heatData) box.innerHTML=`<div class="empty">Couldn't load ${exName()} prices. Pull down to try again.<br><span style="font-size:12px;color:var(--ink-3)">Details: ${esc(e.message||e)}</span></div>`; }
-}
-function bindHeat(){
-  $("hm-n").addEventListener("click",e=>{ const b=e.target.closest("[data-hn]"); if(!b) return; ui.heat.n=+b.dataset.hn;
-    $("hm-n").querySelectorAll("button").forEach(x=>x.setAttribute("aria-pressed",String(x===b))); paintHeat(); });
-  if(heatData && heatData.ex===tradeEx()) paintHeat();
-  refreshHeat(false);
-}
-
 /* ---------- second currency ---------- */
 const hasSec = () => S.settings.secondCur && S.settings.secondRate > 0;
 function fmtSec(v){ const st=S.settings; const n=v*st.secondRate;
@@ -945,7 +864,7 @@ function render(){
   const c = compute(S.settings, S.trades);
   document.querySelectorAll("nav.tabs button").forEach(b=>b.setAttribute("aria-selected", String(b.dataset.tab===ui.tab)));
   // Position size is a tab now; the floating button only remains for logging trades by hand (auto-log off).
-  $("fab").hidden = ui.tab==="settings" || ui.tab==="markets" || ui.tab==="calc" || ui.tab==="heat" || S.settings.autoLog!==false;
+  $("fab").hidden = ui.tab==="settings" || ui.tab==="markets" || ui.tab==="calc" || S.settings.autoLog!==false;
   if(ui.tab!=="calc" && ui.sheet && ui.sheet.inline){ // leaving the tab: remember the trade you were sizing
     if($("ntf")) ui.calcKeep={pair:$("n-pair").value, entry:$("n-entry").value, sl:$("n-sl").value, dir:ui.sheet.dir, mode:ui.sheet.mode};
     ui.sheet=null; }
@@ -955,9 +874,8 @@ function render(){
     const pre=ui.calcPre||ui.calcKeep||{}; ui.calcPre=null; newTradeSheet(pre, {inline:true}); return;
   }
   $("fab").textContent = S.settings.autoLog!==false ? "Position size" : "+ New trade";
-  $("view").innerHTML = ui.tab==="dash" ? viewDash(c) : ui.tab==="trades" ? viewTrades(c) : ui.tab==="markets" ? viewMarkets() : ui.tab==="heat" ? viewHeat() : viewSettings(c);
+  $("view").innerHTML = ui.tab==="dash" ? viewDash(c) : ui.tab==="trades" ? viewTrades(c) : ui.tab==="markets" ? viewMarkets() : viewSettings(c);
   if(ui.tab==="markets") bindMarkets();
-  if(ui.tab==="heat") bindHeat();
   if(ui.tab==="dash") drawSpark(c);
   if(ui.tab==="settings") bindSettings();
   if(ui.tab==="trades" && Native) tick();
@@ -1777,7 +1695,6 @@ document.addEventListener("click",e=>{
   const tab=e.target.closest("nav.tabs button"); if(tab){ goTab(tab.dataset.tab); return; }
   const f=e.target.closest("[data-filter]"); if(f){ ui.filter=f.dataset.filter; render(); return; }
   const o=e.target.closest("[data-open]"); if(o){ tradeSheet(o.dataset.open); return; }
-  const hp=e.target.closest("[data-hpair]"); if(hp){ ui.calcPre={pair:hp.dataset.hpair, entry:+hp.dataset.hpx}; goTab("calc"); return; }
   const mp=e.target.closest("[data-mpair]"); if(mp){ ui.calcPre={ex:ui.mk.ex, market:ui.mk.market, pair:mp.dataset.mpair, entry:+mp.dataset.mpx}; goTab("calc"); return; }
   const ps=e.target.closest("[data-pos]"); if(ps){ const p=ui.posList[+ps.dataset.pos]; if(!p) return;
     const logged=S.trades.find(t=>!t.outcome && t.posKey && t.posKey===p.key); if(logged){ tradeSheet(logged.id); return; }
@@ -1901,7 +1818,6 @@ async function tick(){
   try{
     const sheetOpen=!$("sheet").hidden;
     if(!sheetOpen && ui.tab==="markets") await loadMarkets(false);
-    else if(!sheetOpen && ui.tab==="heat") await refreshHeat(false); // every 15 s (loadHeat caches in between)
     else if(!sheetOpen && ui.tab==="trades"){ await Promise.all([refreshLive(S.trades), refreshPositions()]); paintLive(); }
     else if(sheetOpen && ui.sheet && ui.sheet.kind==="trade"){ await refreshLive(S.trades.filter(t=>t.id===ui.sheet.id)); paintLive(); }
   }catch(e){} finally{ ticking=false; }
@@ -1945,7 +1861,6 @@ document.addEventListener("visibilitychange", ()=>{ if(!document.hidden) tick();
         const jobs=[];
         if(syncList().length) jobs.push(syncAccounts().then(errs=>{ if(errs && errs.length) msg=errs[0]; }));
         if(ui.tab==="markets") jobs.push(loadMarkets(true));
-        if(ui.tab==="heat") jobs.push(refreshHeat(true));
         if(ui.tab==="trades") jobs.push(refreshLive(S.trades));
         if(S.settings.secondCur && !/^Typed/.test(S.settings.rateFrom||"")) jobs.push(updateRate().then(()=>{ S.settings.rateErr=null; }).catch(e=>{ S.settings.rateErr=String(e.message||e); }));
         await Promise.allSettled(jobs);
