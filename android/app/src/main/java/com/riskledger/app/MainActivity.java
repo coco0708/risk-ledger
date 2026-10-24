@@ -1,6 +1,11 @@
 package com.riskledger.app;
 
 import android.app.Activity;
+import android.content.ContentValues;
+import android.os.Build;
+import android.os.Environment;
+import android.provider.MediaStore;
+import java.io.OutputStream;
 import android.content.Intent;
 import android.net.Uri;
 import android.os.Bundle;
@@ -53,6 +58,8 @@ import org.json.JSONObject;
 
 public class MainActivity extends Activity {
     private WebView web;
+    private Uri lastSaved;     // the last file saved to Downloads, for Open / Share
+    private String lastMime;
     private static String userAgent = "Mozilla/5.0 (Linux; Android) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Mobile Safari/537.36";
 
     @Override
@@ -444,6 +451,53 @@ public class MainActivity extends Activity {
         @JavascriptInterface
         public void privateGet(final String id, final String ex, final String kind) {
             new Thread(() -> reply(id, signedGet(ex, kind))).start();
+        }
+
+        /** Save a file the page built (base64) into the phone's Downloads folder. Returns where it went, or "ERR:..." */
+        @JavascriptInterface
+        public String saveDownload(String name, String b64, String mime) {
+            try {
+                byte[] data = Base64.decode(b64, Base64.DEFAULT);
+                String safe = name.replaceAll("[^A-Za-z0-9._-]", "_");
+                lastMime = mime;
+                if (Build.VERSION.SDK_INT >= 29) {
+                    ContentValues v = new ContentValues();
+                    v.put(MediaStore.MediaColumns.DISPLAY_NAME, safe);
+                    v.put(MediaStore.MediaColumns.MIME_TYPE, mime);
+                    v.put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS);
+                    Uri uri = getContentResolver().insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, v);
+                    if (uri == null) return "ERR:Couldn't create the file in Downloads.";
+                    try (OutputStream o = getContentResolver().openOutputStream(uri)) { o.write(data); }
+                    lastSaved = uri;
+                    return "Downloads/" + safe;
+                } else {
+                    // Android 8–9: the app's own Downloads folder (no storage permission needed)
+                    File dir = getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS);
+                    File f = new File(dir, safe);
+                    try (FileOutputStream o = new FileOutputStream(f)) { o.write(data); }
+                    lastSaved = null;
+                    return f.getAbsolutePath();
+                }
+            } catch (Exception e) { return "ERR:" + e.getMessage(); }
+        }
+
+        /** Open or share the file saved last. */
+        @JavascriptInterface
+        public void useSaved(final boolean share) {
+            runOnUiThread(() -> {
+                if (lastSaved == null) return;
+                Intent i;
+                if (share) {
+                    i = new Intent(Intent.ACTION_SEND);
+                    i.setType(lastMime);
+                    i.putExtra(Intent.EXTRA_STREAM, lastSaved);
+                } else {
+                    i = new Intent(Intent.ACTION_VIEW);
+                    i.setDataAndType(lastSaved, lastMime);
+                }
+                i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                try { startActivity(Intent.createChooser(i, share ? "Share" : "Open with")); } catch (Exception ignored) { }
+            });
         }
 
         @JavascriptInterface

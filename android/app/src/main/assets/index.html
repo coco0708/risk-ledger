@@ -1126,7 +1126,7 @@ function viewSettings(){
 
   <section class="card form">
     <div class="label">Your data</div>
-    <div class="two"><button class="btn ghost" data-act="exportCsv">Export CSV</button><button class="btn ghost" data-act="backup">Back up</button></div>
+    <button class="btn ghost" data-act="excel">Download Excel</button>
     <button class="btn ghost" data-act="restore">Restore from backup</button>
     <div id="dangerZone"><button class="btn danger" data-act="askReset">Delete all trades</button></div>
     <span class="hint" style="font-size:12.5px;color:var(--ink-3)">${Native?"Trades are saved on this phone.":"In this preview, trades are saved in this browser only."}</span>
@@ -1430,7 +1430,7 @@ function updatePreview(c){
     ${(()=>{ const ta=accounts()[ui.sheet.ex], tb=ta&&keyInfo(ui.sheet.ex)? acctTotal(ta) : null, nm=EX[ui.sheet.ex].name;
       if(fut && tb!=null && L.margin>tb) return `<div class="warnbox" style="margin-top:8px">This needs ${money(L.margin)} margin, but ${nm} futures has ${money(tb)}. Move funds to ${nm} futures, raise the leverage, or lower the risk.</div>`;
       return fut&&bal>0&&L.margin>bal?`<div class="warnbox" style="margin-top:8px">This needs ${money(L.margin)} margin, more than your balance. Raise the leverage or lower the risk.</div>`:""; })()}
-    <div class="tplist">${S.settings.tps.map((t,i)=>`<div><span class="label">TP${i+1} · ${t.r}R</span><span class="num">${price(tpPrice(v.entry,v.sl,v.dir,t.r))}</span></div>`).join("")}</div>`;
+    `;
 }
 function saveNew(){
   const v=readNew(); const e=$("n-err");
@@ -1546,6 +1546,98 @@ function shareOrShow(title, text, filename){
     <button class="btn" data-act="copyOut">Copy</button></div>`);
   ui.sheet={kind:"io"};
 }
+/* ---------- Excel export: a small .xlsx writer (no library, works offline) ---------- */
+const CRC_T=(()=>{ const t=new Uint32Array(256); for(let n=0;n<256;n++){ let c=n; for(let k=0;k<8;k++) c = c&1 ? 0xEDB88320^(c>>>1) : c>>>1; t[n]=c>>>0; } return t; })();
+const crc32 = b => { let c=0xFFFFFFFF; for(let i=0;i<b.length;i++) c=CRC_T[(c^b[i])&255]^(c>>>8); return (c^0xFFFFFFFF)>>>0; };
+function zipStore(files){ // [{name, data:Uint8Array}] → Uint8Array (stored, no compression)
+  const enc=new TextEncoder(), parts=[], central=[]; let off=0;
+  const u16=v=>[v&255,(v>>>8)&255], u32=v=>[v&255,(v>>>8)&255,(v>>>16)&255,(v>>>24)&255];
+  for(const f of files){ const nm=enc.encode(f.name), crc=crc32(f.data), sz=f.data.length;
+    const head=[...u32(0x04034b50),...u16(20),...u16(0x0800),...u16(0),...u16(0),...u16(0x21),...u32(crc),...u32(sz),...u32(sz),...u16(nm.length),...u16(0)];
+    parts.push(new Uint8Array(head), nm, f.data);
+    central.push(new Uint8Array([...u32(0x02014b50),...u16(20),...u16(20),...u16(0x0800),...u16(0),...u16(0),...u16(0x21),...u32(crc),...u32(sz),...u32(sz),...u16(nm.length),...u16(0),...u16(0),...u16(0),...u16(0),...u32(0),...u32(off)]), nm);
+    off+=head.length+nm.length+sz; }
+  const cdSize=central.reduce((s,p)=>s+p.length,0);
+  const end=new Uint8Array([...u32(0x06054b50),...u16(0),...u16(0),...u16(files.length),...u16(files.length),...u32(cdSize),...u32(off),...u16(0)]);
+  const all=[...parts,...central,end], out=new Uint8Array(all.reduce((s,p)=>s+p.length,0)); let p=0; all.forEach(a=>{ out.set(a,p); p+=a.length; }); return out;
+}
+// sheets: [{name, cols:[width...], rows:[[cell...]]}]; a cell is a string, a number, null, or {v, s} (s: 1 bold header, 2 money, 3 price, 4 percent, 5 bold label)
+function buildXlsx(sheets){
+  const x=s=>String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])).replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g,"");
+  const col=i=>{ let s=""; i++; while(i>0){ const m=(i-1)%26; s=String.fromCharCode(65+m)+s; i=Math.floor((i-1)/26); } return s; };
+  const sheetXml=sh=>{ const rows=sh.rows.map((r,ri)=>`<row r="${ri+1}">${r.map((c,ci)=>{ if(c==null || c==="") return ""; const o=(typeof c==="object")? c : {v:c}; const ref=col(ci)+(ri+1), st=o.s?` s="${o.s}"`:"";
+      return typeof o.v==="number" && isFinite(o.v) ? `<c r="${ref}"${st}><v>${o.v}</v></c>` : `<c r="${ref}"${st} t="inlineStr"><is><t xml:space="preserve">${x(o.v)}</t></is></c>`; }).join("")}</row>`).join("");
+    const cols=sh.cols? `<cols>${sh.cols.map((w,i)=>`<col min="${i+1}" max="${i+1}" width="${w}" customWidth="1"/>`).join("")}</cols>` : "";
+    return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetViews><sheetView workbookViewId="0">${sh.freeze?`<pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/>`:""}</sheetView></sheetViews>${cols}<sheetData>${rows}</sheetData></worksheet>`; };
+  const enc=new TextEncoder(), f=(name,s)=>({name, data:enc.encode(s)});
+  const files=[
+    f("[Content_Types].xml", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>${sheets.map((_,i)=>`<Override PartName="/xl/worksheets/sheet${i+1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join("")}</Types>`),
+    f("_rels/.rels", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>`),
+    f("xl/workbook.xml", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>${sheets.map((sh,i)=>`<sheet name="${x(sh.name)}" sheetId="${i+1}" r:id="rId${i+1}"/>`).join("")}</sheets></workbook>`),
+    f("xl/_rels/workbook.xml.rels", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${sheets.map((_,i)=>`<Relationship Id="rId${i+1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${i+1}.xml"/>`).join("")}<Relationship Id="rId${sheets.length+1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`),
+    f("xl/styles.xml", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><numFmts count="3"><numFmt numFmtId="164" formatCode="#,##0.00"/><numFmt numFmtId="165" formatCode="0.########"/><numFmt numFmtId="166" formatCode="0.0%"/></numFmts><fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font></fonts><fills count="3"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FFE2F4EC"/></patternFill></fill></fills><borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="6"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/><xf numFmtId="164" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/><xf numFmtId="165" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/><xf numFmtId="166" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/><xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>`),
+    ...sheets.map((sh,i)=>f(`xl/worksheets/sheet${i+1}.xml`, sheetXml(sh)))];
+  return zipStore(files);
+}
+function ledgerWorkbook(){
+  const st=S.settings, c=compute(st,S.trades), cur=st.currency, ex=tradeEx(), sc=startCap(), bal=exTotal();
+  const H=v=>({v,s:1}), M=v=>v==null||!isFinite(v)?null:{v:+(+v).toFixed(2),s:2}, P=v=>v==null||!isFinite(v)?null:{v:+v,s:3}, PC=v=>v==null||!isFinite(v)?null:{v:+v,s:4}, L=v=>({v,s:5});
+  const when=ms=>ms? new Date(ms).toLocaleString("en-CA",{year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",hour12:false}).replace(",","") : "";
+  const trades=S.trades.slice().sort((a,b)=>(a.created||0)-(b.created||0));
+  const summary={name:"Summary", cols:[30,18], rows:[
+    [L("Risk Ledger"), when(Date.now())],
+    [],
+    [L("Account")],
+    ["Trading exchange", EX[ex].name+" futures"],
+    [`Balance (${cur})`, M(bal!=null? bal : c.bal)],
+    [`Starting capital (${cur})`, M(sc? sc.amt : c.cap)],
+    ["Starting capital date", sc? when(sc.at) : ""],
+    [`Profit since start (${cur})`, M(sc&&bal!=null? bal-sc.amt : c.bal-c.cap)],
+    ["Profit since start (%)", PC(sc&&bal!=null&&sc.amt? (bal-sc.amt)/sc.amt : (c.cap? (c.bal-c.cap)/c.cap : null))],
+    [],
+    [L("Risk")],
+    ["Risk per trade (%)", st.riskPct],
+    [`Next trade risk (${cur})`, M(c.nextUsd)],
+    ["Drawdown from peak", PC(c.dd)],
+    ["Drawdown brake", c.brake? `On · risk ${c.nextPct}%` : "Off"],
+    [],
+    [L("Results")],
+    ["Closed trades", c.n],
+    ["Wins / losses / breakeven", `${c.wins} / ${c.losses} / ${c.be}`],
+    ["Win rate", PC(c.winRate)],
+    ["Expectancy (R)", c.expR!=null? +c.expR.toFixed(2) : null],
+    ["Total (R)", +c.totalR.toFixed(2)],
+    ["Profit factor", c.pf==null? null : c.pf===Infinity? "∞" : +c.pf.toFixed(2)],
+    [`Closed trades P&L (${cur})`, M(c.bal-c.cap)],
+    ["Max drawdown", PC(c.maxDD)],
+    ["Open trades", c.open.length]]};
+  const tradeSheet={name:"Trades", freeze:true, cols:[17,10,13,7,8,12,12,12,12,12,10,9,9,12,9,9,17,17,28], rows:[
+    ["Opened","Exchange","Pair","Side","Leverage","Entry","Stop loss","Exit","Size (coins)",`Risk (${cur})`,"Risk basis","Outcome","R",`P&L (${cur})`,"Fees","Partials","Closed","Status","Note"].map(H),
+    ...trades.map(t=>{ const sz=t.size0||t.sizeNow||(t.sl&&t.riskUsd? t.riskUsd/Math.abs(t.entry-t.sl) : null);
+      return [when(t.openedAt||t.created)||t.date, t.ex&&EX[t.ex]?EX[t.ex].name:"", pairLabel(t.pair), t.dir, t.lev||null, P(t.entry), P(t.sl0||t.sl), P(t.exitPrice),
+        sz? +(+sz).toPrecision(8) : null, M(t.riskUsd), t.riskEst?"Estimated (plan %)":"Stop at open", t.outcome||"", t.outcome&&t._R!=null? +t._R.toFixed(2) : null,
+        M(t.outcome? t._pnl : null), M(t.fees||0), (t.fills||[]).filter(f=>f.kind==="close").length - (t.outcome&&(t.fills||[]).length?1:0) || null,
+        when(t.closedAt), t.outcome?"Closed":"Open", t.note||""]; })]};
+  const acts=[]; trades.forEach(t=>(t.fills||[]).forEach(f=>acts.push([when(f.at), pairLabel(t.pair), t.dir, f.kind==="open"?"Open":(f.liq?"Liquidated":"Close"), +(+f.qty).toPrecision(8), P(f.price), f.kind==="close"? M(f.pnl) : null, M(f.fee)])));
+  const actSheet={name:"Activity", freeze:true, cols:[17,13,7,11,14,12,12,10], rows:[["Time","Pair","Side","Fill","Quantity","Price",`P&L (${cur})`,"Fee"].map(H), ...acts.sort((a,b)=>String(a[0]).localeCompare(String(b[0])))]};
+  return buildXlsx([summary, tradeSheet, actSheet]);
+}
+async function downloadExcel(){
+  const bytes=ledgerWorkbook(), name=`RiskLedger-${todayStr()}.xlsx`, mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+  if(Native && Native.saveDownload){
+    let b64=""; for(let i=0;i<bytes.length;i+=0x8000) b64+=String.fromCharCode.apply(null, bytes.subarray(i,i+0x8000)); b64=btoa(b64);
+    const where=Native.saveDownload(name, b64, mime);
+    if(String(where).startsWith("ERR:")){ toast("Couldn't save: "+String(where).slice(4)); return; }
+    ui.sheet={kind:"saved", float:true};
+    openSheet(`<header><h2>Excel file saved</h2><button class="x" data-act="close" aria-label="Close">×</button></header>
+      <div class="form"><div class="note" style="margin:0">Saved to <b>${esc(where)}</b>: Summary, Trades (${S.trades.length}) and Activity sheets.</div>
+      <div class="two"><button class="btn" data-act="openSaved">Open</button><button class="btn ghost" data-act="shareSaved">Share</button></div></div>`);
+    return;
+  }
+  const a=document.createElement("a"); a.href=URL.createObjectURL(new Blob([bytes],{type:mime})); a.download=name; document.body.appendChild(a); a.click(); setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); },1000);
+  toast("Excel file downloaded");
+}
+
 function csv(){
   const c=compute(S.settings,S.trades);
   const head=["date","exchange","market","pair","direction","leverage","entry","stop_loss","risk","outcome","r_result","fees","pnl","note"];
@@ -1631,6 +1723,8 @@ document.addEventListener("click",e=>{
   else if(act==="capFromEx"){ toast("Getting your futures balance…"); syncAccounts().then(()=>{ if(setCapitalFromExchange()){ render(); toast(`Starting capital set to ${money(S.settings.capital)} ${S.settings.currency}`); } else toast("Your futures balance is 0. Transfer funds to futures or type the capital yourself."); }); }
   else if(act==="connect") connectSheet(a.dataset.ex);
   else if(act==="saveKey") saveKeyFlow();
+  else if(act==="excel") downloadExcel();
+  else if(act==="openSaved"||act==="shareSaved"){ if(Native&&Native.useSaved) Native.useSaved(act==="shareSaved"); }
   else if(act==="editCap") capitalPrompt(tradeEx());
   else if(act==="resetPeak"){ resetPeak(tradeEx()); persist(); render(); toast(`Peak reset to ${money((S.exPeak||{})[tradeEx()]||0)} · drawdown 0%`); }
   else if(act==="capSave"||act==="capSkip"){ const sh=ui.sheet, then=sh.then;
