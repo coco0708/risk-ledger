@@ -527,7 +527,8 @@ function exRisk(k){
   const dd = peak>0 ? Math.max(0,1-bal/peak) : 0, brake = dd >= st.brakeDD/100;
   const pctUsed = st.riskPct*(brake? st.brakeMult/100 : 1);
   const open = S.trades.filter(t=>!t.outcome && t.ex===k);
-  return { bal, peak, dd, brake, pct:pctUsed, risk: Math.max(bal,0)*pctUsed/100, open:open.length, openRisk: open.reduce((s,t)=>s+(Number(t.riskUsd)||0),0), positions:(a.positions||[]).length };
+  const sc=(st.startCap||{})[k], base = isFixed(st) ? (sc? sc.amt : (Number(st.capital)||0)) : bal;
+  return { bal, peak, dd, brake, pct:pctUsed, risk: Math.max(base,0)*pctUsed/100, open:open.length, openRisk: open.reduce((s,t)=>s+(Number(t.riskUsd)||0),0), positions:(a.positions||[]).length };
 }
 function updatePeaks(){ S.exPeak=S.exPeak||{}; connectedEx().forEach(k=>{ const b=acctTotal(accounts()[k]); if(b>(S.exPeak[k]||0)) S.exPeak[k]=b; }); }
 // Read the trading exchange, plus any exchange that still has open trades in the log (so they close properly after a switch).
@@ -944,6 +945,9 @@ function rFor(outcome, manualR, st){
 function tpPrice(entry, sl, dir, r){ const d=Math.abs(entry-sl); return entry + (dir==="Short"?-1:1)*r*d; }
 function closedSorted(trades){ return trades.filter(t=>t.outcome).sort((a,b)=>(a.closedAt-b.closedAt)||(a.created-b.created)); }
 
+// Risk style: "compound" sizes each trade on the balance now; "flat" (Fixed) on the starting capital, so the amount stays the same.
+const isFixed = (st=S.settings) => st.mode==="flat";
+const styleName = (st=S.settings) => isFixed(st) ? "Fixed" : "Compound";
 function compute(st, trades){
   const sc = st.startCap && st.startCap[st.tradeEx||"mexc"];
   const cap = sc ? sc.amt : Number(st.capital)||0;
@@ -966,7 +970,7 @@ function compute(st, trades){
   const dd = x ? x.dd : (peak>0 ? Math.max(0,1-bal/peak) : 0);
   const brake = dd >= st.brakeDD/100;
   const nextPct = st.riskPct * (brake ? st.brakeMult/100 : 1);
-  const base = x ? Math.max(exBal,0) : Math.max(bal,0);
+  const base = isFixed(st) ? Math.max(cap,0) : x ? Math.max(exBal,0) : Math.max(bal,0);
   const nextUsd = base*nextPct/100;
   const open = trades.filter(t=>!t.outcome);
   const openRisk = open.reduce((s,t)=>s+(Number(t.riskUsd)||0),0);
@@ -999,7 +1003,7 @@ const cls = v => v>0?"up":v<0?"down":"";
 
 /* ---------- sample data (first launch only, clearly marked) ---------- */
 function makeSample(){
-  const st = clone(DEF); const trades=[];
+  const st = clone(DEF); st.styleV2=true; const trades=[];
   const rows = [
     ["BTCUSDT","Long",62000,60760,"TP2"],["ETHUSDT","Short",2650,2716,"SL"],["SOLUSDT","Long",148.2,144.6,"TP1"],
     ["BTCUSDT","Long",63150,61900,"TP3"],["ETHUSDT","Long",2580,2528,"SL"],["SOLUSDT","Short",152.4,156.1,"BE"],
@@ -1018,7 +1022,7 @@ function makeSample(){
 
 function load(){
   const raw = loadRaw();
-  if(raw){ try{ const o=JSON.parse(raw); if(o && o.settings && Array.isArray(o.trades)){ o.settings = Object.assign(clone(DEF), o.settings); o.settings.mode="compound"; return o; } }catch(e){} }
+  if(raw){ try{ const o=JSON.parse(raw); if(o && o.settings && Array.isArray(o.trades)){ o.settings = Object.assign(clone(DEF), o.settings); if(!o.settings.styleV2){ o.settings.mode="compound"; o.settings.styleV2=true; } return o; } }catch(e){} }
   return makeSample();
 }
 
@@ -1048,7 +1052,7 @@ function render(){
 function header(){
   const st=S.settings;
   return `<header class="top"><div class="brand">Risk Ledger <span>· ${esc(st.currency)}</span></div>
-    <span class="chip mute">Compound · ${st.riskPct}%</span></header>`;
+    <span class="chip mute">${styleName(st)} · ${st.riskPct}%</span></header>`;
 }
 
 function sampleBanner(){
@@ -1089,7 +1093,7 @@ function viewDash(c){
 
   <section class="card next">
     <div class="sechead"><div class="label">Next trade risk</div>${c.brake?`<span class="chip warn">Brake on · down ${pct(c.dd)}</span>`:`<span class="chip up">Brake off</span>`}</div>
-    <div class="big"><span class="num">${money(c.nextUsd)}</span><span style="color:var(--ink-2)">${cur} · ${c.nextPct.toFixed(2).replace(/\.?0+$/,"")}% of ${c.exBal!=null?exName()+" futures":"balance"}</span></div>
+    <div class="big"><span class="num">${money(c.nextUsd)}</span><span style="color:var(--ink-2)">${cur} · ${c.nextPct.toFixed(2).replace(/\.?0+$/,"")}% of ${isFixed()?"starting capital":c.exBal!=null?exName()+" futures":"balance"}</span></div>
     ${hasSec()?`<div class="sec num" style="margin-top:-6px">${secTxt(+c.nextUsd.toFixed(2))}</div>`:""}
     <div>
       <div class="kv"><span class="k">Drawdown from peak</span><span class="v num ${c.dd>0?"down":""}">${pct(c.dd)}</span></div>
@@ -1242,8 +1246,9 @@ function viewSettings(){
       <div class="field"><label for="s-risk">Risk per trade (%)</label><input id="s-risk" class="num" inputmode="decimal" value="${st.riskPct}"></div>
       <div class="field"><label for="s-currency">Currency</label><input id="s-currency" value="${esc(st.currency)}"></div>
     </div>
+    <div class="field"><label>Risk style</label><div class="seg" id="s-style">${["compound","flat"].map(k=>`<button type="button" data-style="${k}" aria-pressed="${(isFixed(st)?"flat":"compound")===k}">${k==="flat"?"Fixed":"Compound"}</button>`).join("")}</div></div>
     ${capRow("Starting capital · "+exName(), true)}
-    <span class="hint" style="font-size:12.5px;color:var(--ink-3)">${connectedEx().length?`Each trade risks this % of your ${exName()} futures balance at that moment (now ${money(exTotal())} ${esc(st.currency)}), so risk grows as you win and shrinks as you lose.`:`Connect your trading exchange below. Each trade then risks this % of its futures balance at that moment.`}</span>
+    <span class="hint" id="s-stylehint" style="font-size:12.5px;color:var(--ink-3)"></span>
     <div class="savebar"><span class="hint" data-dirty hidden>Unsaved changes</span><div class="err" data-saveerr hidden></div><button class="btn" data-save="account" disabled>Save</button></div>
   </section>
 
@@ -1311,6 +1316,16 @@ function bindSettings(){
   const segPick = (id, attr) => { const el=$(id); if(!el) return; el.addEventListener("click", e=>{ const b=e.target.closest("button"); if(!b || !b.hasAttribute(attr)) return;
     el.querySelectorAll("button").forEach(x=>x.setAttribute("aria-pressed", String(x===b))); markDirty(el.closest("[data-card]")); }); };
   segPick("s-theme","data-theme-set");
+  segPick("s-style","data-style");
+  // what the risk % means under each style, with the amount it gives now
+  const styleHint = () => { const el=$("s-stylehint"); if(!el) return;
+    const fixed = ($("s-style").querySelector('[aria-pressed="true"]')||{}).dataset?.style==="flat";
+    const pc = parseFloat($("s-risk").value), cur=esc(st.currency), sc=startCap(), cap = sc? sc.amt : null, bal = exTotal();
+    const amt = v => pc>0 && v>0 ? ` = <b>${money(v*pc/100)} ${cur}</b>` : "";
+    el.innerHTML = fixed
+      ? (cap!=null ? `Each trade risks this % of your starting capital (${money(cap)} ${cur})${amt(cap)} every trade, win or lose. It changes only when you change the % or the starting capital.` : `Each trade risks this % of your starting capital, the same amount every trade. Set the starting capital above.`)
+      : (bal!=null ? `Each trade risks this % of your ${exName()} futures balance at that moment (now ${money(bal)} ${cur})${amt(bal)}, so risk grows as you win and shrinks as you lose.` : `Connect your trading exchange below. Each trade then risks this % of its futures balance at that moment.`); };
+  $("s-style").addEventListener("click", styleHint); $("s-risk").addEventListener("input", styleHint); styleHint();
   segPick("s-tradeex","data-tex");
   const texHint=()=>{ const b=$("s-tradeex").querySelector('[aria-pressed="true"]'), k=b? b.dataset.tex : tradeEx(), n=EX[k].name;
     document.querySelectorAll("[data-exname]").forEach(el=>el.textContent=n);
@@ -1327,6 +1342,7 @@ function bindSettings(){
       if(!(risk>0 && risk<=100)) return fail("Risk per trade must be between 0 and 100%.");
       if(cur!==st.currency){ st.secondRate=null; st.rateAt=null; }
       st.riskPct=risk; st.currency=cur;
+      const sb=$("s-style").querySelector('[aria-pressed="true"]'); st.mode = sb && sb.dataset.style==="flat" ? "flat" : "compound"; st.styleV2=true;
     } else if(name==="appearance"){
       const b=$("s-theme").querySelector('[aria-pressed="true"]'); st.theme=b? b.dataset.themeSet : "system"; applyTheme();
     } else if(name==="second"){
@@ -1440,7 +1456,7 @@ function newTradeSheet(pre, opts){
     <div class="levchips" id="n-levchips" role="group" aria-label="Quick leverage">${[5,10,20,50,100].map(v=>`<button type="button" data-lev="${v}">${v}x</button>`).join("")}</div>
     <span class="hint" id="n-levsrc" style="font-size:12.5px;color:var(--ink-3);margin-top:-6px"></span>
     ${pre.posKey?`<div class="warnbox">Filled in from your open ${EX[pre.ex].name} position${pre.sl?`: risk is what you'd lose if the stop at ${price(pre.sl)} is hit (${(pre.risk/(c.exBal>0?c.exBal:Math.max(c.bal,1e-9))*100).toFixed(2)}% of balance)`:`. It has no stop loss on the exchange, so enter the one you're using`}.</div>`:""}
-    <div class="field" style="margin-top:-6px" ${pre.risk>0?"hidden":""}><span class="hint" id="n-riskhint">${c.nextPct.toFixed(2).replace(/\.?0+$/,"")}% of ${S.settings.mode==="flat"?"starting capital":"balance"}${c.brake?" · drawdown brake on":""}${hasSec()?" · "+secTxt(+c.nextUsd.toFixed(2)):""}. You can change it.</span></div>
+    <div class="field" style="margin-top:-6px" ${pre.risk>0?"hidden":""}><span class="hint" id="n-riskhint">${c.nextPct.toFixed(2).replace(/\.?0+$/,"")}% of ${isFixed()?"starting capital":"balance"}${c.brake?" · drawdown brake on":""}${hasSec()?" · "+secTxt(+c.nextUsd.toFixed(2)):""}. You can change it.</span></div>
     <div class="card preview" id="n-prev"></div>
     <div class="field" ${calc?"hidden":""}><label for="n-note">Note (optional)</label><input id="n-note" placeholder="Setup, timeframe, reason" value="${pre.tps&&pre.tps.length? esc("Exchange TP "+pre.tps.map(price).join(" / ")) : ""}"></div>
     <div id="n-err" class="err" hidden></div>
@@ -1449,7 +1465,7 @@ function newTradeSheet(pre, opts){
   const upd=()=>updatePreview(c);
   ["n-entry","n-sl","n-risk","n-lev"].forEach(id=>$(id).addEventListener("input",upd));
   const exHint=()=>{ const h=$("n-riskhint"); if(!h) return;
-    h.textContent = `${c.nextPct.toFixed(2).replace(/\.?0+$/,"")}% of ${c.exBal!=null?`your ${exName()} futures balance (${money(c.exBal)})`:"balance"}${c.brake?" · drawdown brake on":""}${hasSec()?" · "+secTxt(+c.nextUsd.toFixed(2)):""}. You can change it.`; };
+    h.textContent = `${c.nextPct.toFixed(2).replace(/\.?0+$/,"")}% of ${isFixed()?`your starting capital (${money(c.cap)})`:c.exBal!=null?`your ${exName()} futures balance (${money(c.exBal)})`:"balance"}${c.brake?" · drawdown brake on":""}${hasSec()?" · "+secTxt(+c.nextUsd.toFixed(2)):""}. You can change it.`; };
   if(!(pre.risk>0)) exHint();
   $("n-risk").addEventListener("input",()=>{ ui.sheet.riskEdited=true; });
   $("n-ex").addEventListener("change",e=>{ ui.sheet.ex=e.target.value;
@@ -1762,6 +1778,7 @@ function ledgerWorkbook(){
     ["Profit since start (%)", PC(sc&&bal!=null&&sc.amt? (bal-sc.amt)/sc.amt : (c.cap? (c.bal-c.cap)/c.cap : null))],
     [],
     [L("Risk")],
+    ["Risk style", styleName(st)],
     ["Risk per trade (%)", st.riskPct],
     [`Next trade risk (${cur})`, M(c.nextUsd)],
     ["Drawdown from peak", PC(c.dd)],
