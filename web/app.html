@@ -1243,7 +1243,7 @@ function viewSettings(){
     <div class="field"><label>Risk style</label><div class="seg" id="s-style">${["compound","flat"].map(k=>`<button type="button" data-style="${k}" aria-pressed="${(isFixed(st)?"flat":"compound")===k}">${k==="flat"?"Fixed":"Compound"}</button>`).join("")}</div></div>
     ${(()=>{ const sc=startCap(), w=futWalletTotal(); return `<div class="field"><label for="s-cap">Starting capital · ${exName()} (${esc(st.currency)})</label>
       <input id="s-cap" class="num" inputmode="decimal" value="${sc?sc.amt:""}" placeholder="0.00">
-      <span class="hint" style="font-size:12.5px;color:var(--ink-3)">${sc?`Recorded ${capDate(sc)}`:"Not set yet"}${w>0?` · <button type="button" class="linkbtn" id="s-capbal">Use balance (${money(w)})</button>`:""}</span></div>`; })()}
+      <span class="hint" style="font-size:12.5px;color:var(--ink-3)">${sc?`Recorded ${capDate(sc)}`:"Not set yet"} · saving a new amount also resets the drawdown peak${w>0?` · <button type="button" class="linkbtn" id="s-capbal">Use balance (${money(w)})</button>`:""}</span></div>`; })()}
     <span class="hint" id="s-stylehint" style="font-size:12.5px;color:var(--ink-3)"></span>
     <div class="savebar"><span class="hint" data-dirty hidden>Unsaved changes</span><div class="err" data-saveerr hidden></div><button class="btn" data-save="account" disabled>Save</button></div>
   </section>
@@ -1285,9 +1285,7 @@ function viewSettings(){
       <div class="field"><label for="s-mult">Risk while on (%)</label><input id="s-mult" class="num" inputmode="decimal" value="${st.brakeMult}"></div>
     </div>
     <span class="hint" style="font-size:12.5px;color:var(--ink-3)">At 50%, a 3% risk becomes 1.5% until the balance makes a new high.</span>
-    ${(()=>{ const x=exRisk(tradeEx()); if(!x) return ""; return `<div class="kv caprow"><span class="k">Peak balance · ${exName()}<br><span style="font-size:12px;color:var(--ink-3)">now ${money(x.bal)} · down ${pct(x.dd)}${x.brake?" · brake on":""}</span></span>
-      <span class="v num">${money(x.peak)}<button class="btn sm" data-act="resetPeak">Reset</button></span></div>
-      <span class="hint" style="font-size:12.5px;color:var(--ink-3)">Reset after a deposit, a withdrawal or a fresh start, so the drawdown is measured from your balance now. Recording a new starting capital resets it too.</span>`; })()}
+    <span class="hint" style="font-size:12.5px;color:var(--ink-3)">Drawdown is measured from your highest ${exName()} balance since the starting capital was saved. Saving a new starting capital under Account starts it again from there.</span>
     <div class="savebar"><span class="hint" data-dirty hidden>Unsaved changes</span><div class="err" data-saveerr hidden></div><button class="btn" data-save="brake" disabled>Save</button></div>
   </section>
 
@@ -1321,7 +1319,7 @@ function bindSettings(){
     el.innerHTML = fixed
       ? (cap!=null ? `Each trade risks this % of your starting capital (${money(cap)} ${cur})${amt(cap)} every trade, win or lose. It changes only when you change the % or the starting capital.` : `Each trade risks this % of your starting capital, the same amount every trade. Set the starting capital above.`)
       : (bal!=null ? `Each trade risks this % of your ${exName()} futures balance at that moment (now ${money(bal)} ${cur})${amt(bal)}, so risk grows as you win and shrinks as you lose.` : `Connect your trading exchange below. Each trade then risks this % of its futures balance at that moment.`); };
-  $("s-style").addEventListener("click", styleHint); $("s-risk").addEventListener("input", styleHint); $("s-cap").addEventListener("input", styleHint); styleHint();
+  $("s-style").addEventListener("click", styleHint); $("s-risk").addEventListener("input", styleHint); let capTouched=false; $("s-cap").addEventListener("input", ()=>{ capTouched=true; styleHint(); }); styleHint();
   const capBal=$("s-capbal"); if(capBal) capBal.addEventListener("click", ()=>{ const w=futWalletTotal(); if(!(w>0)) return; const i=$("s-cap"); i.value=+w.toFixed(2); i.dispatchEvent(new Event("input",{bubbles:true})); });
   segPick("s-tradeex","data-tex");
   const texHint=()=>{ const b=$("s-tradeex").querySelector('[aria-pressed="true"]'), k=b? b.dataset.tex : tradeEx(), n=EX[k].name;
@@ -1339,7 +1337,7 @@ function bindSettings(){
       if(!(risk>0 && risk<=100)) return fail("Risk per trade must be between 0 and 100%.");
       const capTxt=$("s-cap").value.trim(), cap=parseFloat(capTxt), sc0=startCap();
       if(capTxt!=="" || sc0){ if(!(cap>0)) return fail("Starting capital must be an amount above 0."); }
-      if(cap>0 && (!sc0 || +cap.toFixed(2)!==sc0.amt)){ const ex=tradeEx(); st.startCap=st.startCap||{}; st.startCap[ex]={amt:+cap.toFixed(2), at:Date.now()}; resetPeak(ex); if(S.sample){ S.trades=[]; S.sample=false; } }
+      if(cap>0 && (capTouched || !sc0 || +cap.toFixed(2)!==sc0.amt)){ const ex=tradeEx(); st.startCap=st.startCap||{}; st.startCap[ex]={amt:+cap.toFixed(2), at:Date.now()}; resetPeak(ex); if(S.sample){ S.trades=[]; S.sample=false; } }
       if(cur!==st.currency){ st.secondRate=null; st.rateAt=null; }
       st.riskPct=risk; st.currency=cur;
       const sb=$("s-style").querySelector('[aria-pressed="true"]'); st.mode = sb && sb.dataset.style==="flat" ? "flat" : "compound"; st.styleV2=true;
@@ -1359,9 +1357,8 @@ function bindSettings(){
         if(switched){ ui.mk=null; if(!/^Typed/.test(st.rateFrom||"")){ st.secondRate=null; st.rateAt=null; } }
         if(st.autoLog || switched) setTimeout(()=>syncAccounts().then(()=>render()),100);
         if(switched && st.secondCur && !st.secondRate) setTimeout(loadRate,200); };
-      // Changing exchange: record its starting capital before the switch happens.
-      if(switched){ capitalPrompt(tex, ()=>{ apply(); persist(); render(); toast(`Trading on ${EX[tex].name} now`); }); return; }
       apply();
+      if(switched){ persist(); render(); toast(startCap(tex)? `Trading on ${EX[tex].name} now` : `Trading on ${EX[tex].name} now. Set its starting capital under Account.`); return; }
     } else if(name==="brake"){
       const dd=n("s-dd"), mult=n("s-mult");
       if(!(dd>0 && dd<100)) return fail("Trigger must be between 0 and 100%.");
@@ -1395,31 +1392,9 @@ function resetPeak(ex){ S.exPeak=S.exPeak||{}; const a=accounts()[ex], sc=(S.set
 // Starting capital, recorded per exchange: profit is measured from it.
 const startCap = ex => (S.settings.startCap||{})[ex||tradeEx()] || null;
 const capDate = sc => new Date(sc.at).toLocaleDateString([], {month:"short", day:"numeric", year:"numeric"});
-function capRow(label, editable){ const sc=startCap();
+function capRow(label){ const sc=startCap();
   return `<div class="kv caprow"><span class="k">${esc(label)}<br><span style="font-size:12px;color:var(--ink-3)">${sc?capDate(sc):"Not set"}</span></span>
-    <span class="v num">${sc?money(sc.amt):(editable?"":"—")}${editable?`<button class="btn sm" data-act="editCap">${sc?"Change":"Set"}</button>`:""}</span></div>`; }
-async function capitalPrompt(ex, then){
-  const name=EX[ex].name, prev=startCap(ex), has=keyInfo(ex);
-  ui.sheet={kind:"cap", float:true, ex, then};
-  openSheet(`<header><h2>Starting capital · ${name}</h2><button class="x" data-act="close" aria-label="Cancel">×</button></header>
-  <div class="form">
-    <span class="hint" id="cap-msg" style="font-size:13.5px;color:var(--ink-2)">${has? `Getting your ${name} futures balance…` : `${name} isn't connected yet, so type the amount you're starting with.`}</span>
-    <div class="field"><label for="cap-in">Starting capital (${esc(S.settings.currency)})</label><input id="cap-in" class="num" inputmode="decimal" value="${prev?prev.amt:""}" placeholder="0.00"></div>
-    ${prev?`<span class="hint" style="font-size:12.5px;color:var(--ink-3)">Recorded before: ${money(prev.amt)} on ${capDate(prev)}.</span>`:""}
-    <span class="hint" style="font-size:12.5px;color:var(--ink-3)">Your profit or loss on ${name} is measured from this amount. It's recorded with today's date.</span>
-    <div id="cap-err" class="err" hidden></div>
-    <button class="btn" data-act="capSave">${then?"Record and switch":"Record"}</button>
-    ${then?`<button class="btn danger" data-act="capSkip">Switch without recording</button>`:""}
-  </div>`);
-  if(!has) return;
-  try{
-    const acc=await fetchAccount(ex); S.accounts=S.accounts||{}; S.accounts[ex]=acc; persist();
-    if(!(ui.sheet && ui.sheet.kind==="cap" && ui.sheet.ex===ex)) return;
-    const w=acc.futWallet!=null? acc.futWallet : (acc.futEq||0);
-    $("cap-in").value=+w.toFixed(2);
-    $("cap-msg").innerHTML=`Your ${name} futures balance is <b>${money(w)} ${esc(S.settings.currency)}</b> (wallet, without open P&amp;L). Use it as your starting capital, or change it before you continue.`;
-  }catch(e){ if(ui.sheet && ui.sheet.kind==="cap"){ $("cap-msg").textContent=`Couldn't read the ${name} balance (${apiErr(e)}). Type the amount instead.`; } }
-}
+    <span class="v num">${sc?money(sc.amt):"—"}</span></div>`; }
 function newTradeSheet(pre, opts){
   pre = pre && pre.pair ? pre : {}; opts = opts || {};
   const c=compute(S.settings,S.trades);
@@ -1716,7 +1691,7 @@ async function saveKeyFlow(){
     const fresh = S.sample || !S.trades.length;
     if(fresh && adopt && S.sample){ S.trades=[]; S.sample=false; persist(); }
     closeSheet(); toast(`${EX[ex].name} connected · futures ${money(a.futEq||0)} ${S.settings.currency}${adopt?"":" · pick it as trading exchange to use it"}`);
-    if(adopt){ syncAccounts().then(()=>{ if($("sheet").hidden) render(); }); if(S.settings.secondCur && !S.settings.secondRate) loadRate(); if(!startCap(ex)) capitalPrompt(ex); } }
+    if(adopt){ syncAccounts().then(()=>{ if($("sheet").hidden) render(); }); if(S.settings.secondCur && !S.settings.secondRate) loadRate(); } }
   catch(e){ Native.removeKeys(ex); btn.disabled=false; show(apiErr(e)); }
 }
 
@@ -1917,17 +1892,8 @@ document.addEventListener("click",e=>{
   else if(act==="allowNotify"){ if(Native&&Native.requestNotify) Native.requestNotify(); setTimeout(()=>{ if(ui.tab==="markets"&&$("sheet").hidden) render(); }, 4000); }
   else if(act==="chartSize"){ const sh=ui.sheet; ui.calcPre={pair:sh.pair, entry:lastPx()}; closeSheet(); goTab("calc"); }
   else if(act==="openSaved"||act==="shareSaved"){ if(Native&&Native.useSaved) Native.useSaved(act==="shareSaved"); }
-  else if(act==="editCap") capitalPrompt(tradeEx());
-  else if(act==="resetPeak"){ resetPeak(tradeEx()); persist(); render(); toast(`Peak reset to ${money((S.exPeak||{})[tradeEx()]||0)} · drawdown 0%`); }
-  else if(act==="capSave"||act==="capSkip"){ const sh=ui.sheet, then=sh.then;
-    if(act==="capSave"){ const v=parseFloat($("cap-in").value), err=$("cap-err");
-      if(!(v>0)){ err.hidden=false; err.textContent="Enter an amount above 0."; return; }
-      S.settings.startCap=S.settings.startCap||{}; S.settings.startCap[sh.ex]={amt:+v.toFixed(2), at:Date.now()};
-      resetPeak(sh.ex); // a new start: the drawdown brake measures from here
-      if(S.sample){ S.trades=[]; S.sample=false; } persist(); }
-    closeSheet();
-    if(then) then(); else toast(`Starting capital recorded: ${money(startCap(sh.ex).amt)} ${S.settings.currency}`); }
-  else if(act==="disconnect"){ if(Native&&Native.removeKeys) Native.removeKeys(a.dataset.ex); if(S.accounts) delete S.accounts[a.dataset.ex]; persist(); render(); toast(EX[a.dataset.ex].name+" disconnected"); }
+  else if(act==="editCap"){ goTab("settings"); setTimeout(()=>{ const i=$("s-cap"); if(i){ i.scrollIntoView({block:"center"}); i.focus(); } },50); }
+    else if(act==="disconnect"){ if(Native&&Native.removeKeys) Native.removeKeys(a.dataset.ex); if(S.accounts) delete S.accounts[a.dataset.ex]; persist(); render(); toast(EX[a.dataset.ex].name+" disconnected"); }
   else if(act==="syncAcct"){ toast("Refreshing balances…"); syncAccounts().then(errs=>{ render(); toast(errs.length? errs[0] : "Balances updated"); }); }
   else if(act==="doRestore"){ const err=$("io-err"); try{ const o=JSON.parse($("io-in").value); if(!o.settings||!Array.isArray(o.trades)) throw 0; const restored=new Set(o.trades.map(t=>t.posKey).filter(Boolean));
     S={settings:Object.assign(clone(DEF),o.settings), trades:o.trades, sample:false, accounts:S.accounts, exPeak:S.exPeak,
