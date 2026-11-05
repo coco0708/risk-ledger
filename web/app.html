@@ -1241,7 +1241,9 @@ function viewSettings(){
       <div class="field"><label for="s-currency">Currency</label><input id="s-currency" value="${esc(st.currency)}"></div>
     </div>
     <div class="field"><label>Risk style</label><div class="seg" id="s-style">${["compound","flat"].map(k=>`<button type="button" data-style="${k}" aria-pressed="${(isFixed(st)?"flat":"compound")===k}">${k==="flat"?"Fixed":"Compound"}</button>`).join("")}</div></div>
-    ${capRow("Starting capital · "+exName(), true)}
+    ${(()=>{ const sc=startCap(), w=futWalletTotal(); return `<div class="field"><label for="s-cap">Starting capital · ${exName()} (${esc(st.currency)})</label>
+      <input id="s-cap" class="num" inputmode="decimal" value="${sc?sc.amt:""}" placeholder="0.00">
+      <span class="hint" style="font-size:12.5px;color:var(--ink-3)">${sc?`Recorded ${capDate(sc)}`:"Not set yet"}${w>0?` · <button type="button" class="linkbtn" id="s-capbal">Use balance (${money(w)})</button>`:""}</span></div>`; })()}
     <span class="hint" id="s-stylehint" style="font-size:12.5px;color:var(--ink-3)"></span>
     <div class="savebar"><span class="hint" data-dirty hidden>Unsaved changes</span><div class="err" data-saveerr hidden></div><button class="btn" data-save="account" disabled>Save</button></div>
   </section>
@@ -1314,12 +1316,13 @@ function bindSettings(){
   // what the risk % means under each style, with the amount it gives now
   const styleHint = () => { const el=$("s-stylehint"); if(!el) return;
     const fixed = ($("s-style").querySelector('[aria-pressed="true"]')||{}).dataset?.style==="flat";
-    const pc = parseFloat($("s-risk").value), cur=esc(st.currency), sc=startCap(), cap = sc? sc.amt : null, bal = exTotal();
+    const pc = parseFloat($("s-risk").value), cur=esc(st.currency), tc=parseFloat($("s-cap").value), cap = tc>0 ? tc : null, bal = exTotal();
     const amt = v => pc>0 && v>0 ? ` = <b>${money(v*pc/100)} ${cur}</b>` : "";
     el.innerHTML = fixed
       ? (cap!=null ? `Each trade risks this % of your starting capital (${money(cap)} ${cur})${amt(cap)} every trade, win or lose. It changes only when you change the % or the starting capital.` : `Each trade risks this % of your starting capital, the same amount every trade. Set the starting capital above.`)
       : (bal!=null ? `Each trade risks this % of your ${exName()} futures balance at that moment (now ${money(bal)} ${cur})${amt(bal)}, so risk grows as you win and shrinks as you lose.` : `Connect your trading exchange below. Each trade then risks this % of its futures balance at that moment.`); };
-  $("s-style").addEventListener("click", styleHint); $("s-risk").addEventListener("input", styleHint); styleHint();
+  $("s-style").addEventListener("click", styleHint); $("s-risk").addEventListener("input", styleHint); $("s-cap").addEventListener("input", styleHint); styleHint();
+  const capBal=$("s-capbal"); if(capBal) capBal.addEventListener("click", ()=>{ const w=futWalletTotal(); if(!(w>0)) return; const i=$("s-cap"); i.value=+w.toFixed(2); i.dispatchEvent(new Event("input",{bubbles:true})); });
   segPick("s-tradeex","data-tex");
   const texHint=()=>{ const b=$("s-tradeex").querySelector('[aria-pressed="true"]'), k=b? b.dataset.tex : tradeEx(), n=EX[k].name;
     document.querySelectorAll("[data-exname]").forEach(el=>el.textContent=n);
@@ -1334,6 +1337,9 @@ function bindSettings(){
     if(name==="account"){
       const risk=n("s-risk"), cur=($("s-currency").value||"USDT").trim().toUpperCase().slice(0,8);
       if(!(risk>0 && risk<=100)) return fail("Risk per trade must be between 0 and 100%.");
+      const capTxt=$("s-cap").value.trim(), cap=parseFloat(capTxt), sc0=startCap();
+      if(capTxt!=="" || sc0){ if(!(cap>0)) return fail("Starting capital must be an amount above 0."); }
+      if(cap>0 && (!sc0 || +cap.toFixed(2)!==sc0.amt)){ const ex=tradeEx(); st.startCap=st.startCap||{}; st.startCap[ex]={amt:+cap.toFixed(2), at:Date.now()}; resetPeak(ex); if(S.sample){ S.trades=[]; S.sample=false; } }
       if(cur!==st.currency){ st.secondRate=null; st.rateAt=null; }
       st.riskPct=risk; st.currency=cur;
       const sb=$("s-style").querySelector('[aria-pressed="true"]'); st.mode = sb && sb.dataset.style==="flat" ? "flat" : "compound"; st.styleV2=true;
