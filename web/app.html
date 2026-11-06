@@ -586,14 +586,28 @@ async function closedFor(ex, t){
 const validStop = (dir, entry, sl) => sl>0 && entry>0 && (dir==="Short" ? sl > entry*1.0005 : sl < entry*0.9995);
 const plannedRisk = ex => { const st=S.settings, sc=(st.startCap||{})[ex], c=compute(st,S.trades);
   return c.nextUsd>0 ? c.nextUsd : (st.riskPct/100)*(sc? sc.amt : (Number(st.capital)||0)); };
+// A stop that risks under 15% of your planned risk isn't a real stop for R (a stop hugging entry, or a tiny first fill
+// before adding): R would come out huge (+117R on a 1 USDT win). Such trades use the planned risk, marked estimated.
+const MIN_RISK_SHARE = 0.15;
 function setInitialRisk(t, size, sl, ex){
-  if(validStop(t.dir, t.entry, sl)){ t.sl0=sl; t.riskUsd=+(size*Math.abs(t.entry-sl)).toFixed(2); t.riskEst=false; }
-  else { t.riskUsd=+plannedRisk(ex).toFixed(2); t.riskEst=true; }
+  const plan=plannedRisk(ex);
+  if(validStop(t.dir, t.entry, sl)){ t.sl0=sl;
+    const r=size*Math.abs(t.entry-sl);
+    if(plan>0 && r < plan*MIN_RISK_SHARE){ t.riskUsd=+plan.toFixed(2); t.riskEst=true; t.riskSmall=+r.toFixed(4); }
+    else { t.riskUsd=+r.toFixed(2); t.riskEst=false; delete t.riskSmall; } }
+  else { t.riskUsd=+plan.toFixed(2); t.riskEst=true; delete t.riskSmall; }
+}
+// Adding to a position before anything is closed: the risk is the whole position to the opening stop.
+function riskAfterAdd(t, size, prev, ex){
+  if(t.closedSoFar>0 || !(size>(prev||0)*1.001)) return;
+  if(t.sl0 && validStop(t.dir, t.entry, t.sl0)){ const r=size*Math.abs(t.entry-t.sl0); if(r>(t.riskEst? 0 : t.riskUsd||0)) setInitialRisk(t, size, t.sl0, ex); }
 }
 // MEXC: every fill of a position from its order history — opens, adds, partial closes and the final close.
 const csCache={};
-async function mexcCs(sym){ if(csCache[sym]) return csCache[sym]; let cs=1;
-  try{ const d=JSON.parse(await httpGet("https://contract.mexc.com/api/v1/contract/detail?symbol="+sym)); cs=num(d.data&&d.data.contractSize)||1; }catch(e){ return 1; }
+async function mexcCs(sym){ if(csCache[sym]) return csCache[sym];
+  // No guessing: a wrong contract size makes the size (and risk) wrong by that factor, so fail and try again next sync.
+  const d=JSON.parse(await httpGet("https://contract.mexc.com/api/v1/contract/detail?symbol="+sym)), cs=num(d.data&&d.data.contractSize);
+  if(!(cs>0)) throw new Error("No contract size for "+sym);
   return csCache[sym]=cs; }
 async function mexcFills(sym, posId, since){
   const start=Math.round(Math.max(since-2*86400e3, Date.now()-89*86400e3));
@@ -626,7 +640,8 @@ async function importMexcHistory(){
   const have=new Set(S.trades.map(t=>t.posKey).filter(Boolean)), skip=new Set(S.ignoreKeys||[]); let added=0;
   for(const h of hist){
     const key="mexc|"+h.positionId; if(have.has(key) || skip.has(key) || num(h.state)!==3 || num(h.updateTime)<st.logSince) continue;
-    const cs=await mexcCs(h.symbol), sp=splitPair(pairLabel(h.symbol)), dir=num(h.positionType)===2?"Short":"Long";
+    let cs; try{ cs=await mexcCs(h.symbol); }catch(e){ continue; }
+    const sp=splitPair(pairLabel(h.symbol)), dir=num(h.positionType)===2?"Short":"Long";
     const t={ id:uid(), created:num(h.createTime)||Date.now(), date:localDate(num(h.createTime)||Date.now()), pair:sp.b+sp.q, sym:h.symbol, ex:"mexc", market:"futures", lev:num(h.leverage)||null, dir,
       entry:num(h.openAvgPrice), sl:null, size0:num(h.closeVol)*cs||null, sizeNow:0, tpPrices:[], tpHits:0, fees:0, note:"From MEXC history", posKey:key, auto:true,
       pnlUsd:+num(h.realised).toFixed(4), exitPrice:num(h.closeAvgPrice)||null, closedAt:num(h.updateTime) };
@@ -683,7 +698,8 @@ async function mirrorEx(ex, acc, addNew){
     if(Math.abs(p.size-t.sizeNow) > t.sizeNow*0.001 && ex==="mexc"){ // MEXC: read the actual fills
       let ok=false; try{ ok=applyFills(t, await mexcFills(p.sym, p.posId, t.created)); }catch(e){}
       if(!ok && p.size < t.sizeNow){ t.closedSoFar=(t.closedSoFar||0)+(t.sizeNow-p.size); }
-      t.sizeNow=p.size; t.size0=Math.max(t.size0||0,p.size); changed=true;
+      riskAfterAdd(t, p.size, t.sizeNow, ex); t.sizeNow=p.size; t.size0=Math.max(t.size0||0,p.size); changed=true;
+    } else if(p.size > t.sizeNow*1.001){ riskAfterAdd(t, p.size, t.sizeNow, ex); t.sizeNow=p.size; t.size0=Math.max(t.size0||0,p.size); changed=true;
     } else if(p.size < t.sizeNow*0.999){ // part of the position closed: count take-profits passed
       let mk=p.mark||p.entry; try{ mk=await livePrice(ex,"futures",p.pair); }catch(e){}
       const n=crossedTPs(t, mk); if(n>(t.tpHits||0)){ t.tpHits=n; }
@@ -1469,7 +1485,7 @@ function newTradeSheet(pre, opts){
   async function levFromMexc(){
     if(!ui.sheet || ui.sheet.kind!=="new" || !$("n-pair")) return; // card was closed
     const sp=splitPair($("n-pair").value); if(!sp) return;
-    if(tex==="mexc"){ const want=sp.b+"_"+sp.q; ui.sheet.cs=null; mexcCs(want).then(cs=>{ if(ui.sheet && ui.sheet.kind==="new" && splitPair($("n-pair").value) && splitPair($("n-pair").value).b+"_"+splitPair($("n-pair").value).q===want){ ui.sheet.cs=cs; upd(); } }); }
+    if(tex==="mexc"){ const want=sp.b+"_"+sp.q; ui.sheet.cs=null; mexcCs(want).catch(()=>null).then(cs=>{ if(!cs) return; if(ui.sheet && ui.sheet.kind==="new" && splitPair($("n-pair").value) && splitPair($("n-pair").value).b+"_"+splitPair($("n-pair").value).q===want){ ui.sheet.cs=cs; upd(); } }); }
     const pair=sp.b+"/"+sp.q, want=ui.sheet.dir==="Short"?"Short":"Long", my=++levReq;
     const pos=((accounts()[tex]||{}).positions||[]).find(p=>p.pair===pair && p.dir===want);
     const showMode=m=>{ if(!m) return; ui.sheet.exMode=m; if(!ui.sheet.modeEdited){ ui.sheet.mode=m; $("n-mode").querySelectorAll("button").forEach(x=>x.setAttribute("aria-pressed",String(x.dataset.mode===m))); } };
@@ -1613,7 +1629,7 @@ function tradeSheet(id){
     ${t.auto?`<div class="kv"><span class="k">Source</span><span class="v" style="font-family:var(--f-ui)">Synced from ${t.ex&&EX[t.ex]?EX[t.ex].name:"exchange"}</span></div>`:""}
     <div class="kv"><span class="k">Entry · Stop</span><span class="v">${price(t.entry)} · ${t.sl?price(t.sl):"no stop"}</span></div>
     ${t.pnlUsd!=null?`<div class="kv"><span class="k">Closed at · ${t.ex&&EX[t.ex]?EX[t.ex].name:"Exchange"} P&amp;L</span><span class="v ${cls(t.pnlUsd)}">${t.exitPrice?price(t.exitPrice)+" · ":""}${smoney(t.pnlUsd)} ${esc(st.currency)}</span></div>`:""}
-    <div class="kv"><span class="k">Risk${t.riskEst?`<br><span style="font-size:12px;color:var(--ink-3)">estimated: no stop below entry at open, so your ${st.riskPct}% plan is used</span>`:""}</span><span class="v">${t.riskUsd>0?money(t.riskUsd):"unknown (no stop)"} ${esc(st.currency)}${hasSec()?`<br><span style="font-size:12.5px;color:var(--ink-3)">${secTxt(t.riskUsd)}</span>`:""}</span></div>
+    <div class="kv"><span class="k">Risk${t.riskEst?`<br><span style="font-size:12px;color:var(--ink-3)">estimated: ${t.riskSmall!=null?`the stop at open risked only ${money(t.riskSmall)}, too close to count`:"no stop past entry at open"}, so your ${st.riskPct}% plan is used</span>`:""}</span><span class="v">${t.riskUsd>0?money(t.riskUsd):"unknown (no stop)"} ${esc(st.currency)}${hasSec()?`<br><span style="font-size:12.5px;color:var(--ink-3)">${secTxt(t.riskUsd)}</span>`:""}</span></div>
     <div class="kv"><span class="k">Size</span><span class="v">${units(size)} units</span></div>
     ${t.liq ? (()=>{ const first = t.sl && (t.dir==="Short" ? t.liq<=t.sl : t.liq>=t.sl); return `<div class="kv"><span class="k">Leverage · margin</span><span class="v">${t.lev||"—"}x${t.margin?" · "+money(t.margin):""}</span></div>
     <div class="kv"><span class="k">Liquidation (${t.ex&&EX[t.ex]?EX[t.ex].name:"exchange"})</span><span class="v ${first?"down":""}">${price(t.liq)}${first?"<br><span style='font-size:12px'>before your stop</span>":""}</span></div>`; })()
@@ -1937,6 +1953,14 @@ if(!S.settings.riskFix1){
     delete t.fillsTried;
   });
   S.settings.riskFix1=true;
+}
+// One-time repair: trades whose recorded risk is under 15% of the plan (e.g. SATS +117R) use the planned risk.
+if(!S.settings.riskFix2){
+  S.trades.filter(t=>t.auto).forEach(t=>{
+    const sc=(S.settings.startCap||{})[t.ex], plan=(S.settings.riskPct/100)*(sc? sc.amt : (Number(S.settings.capital)||0));
+    if(plan>0 && t.riskUsd>0 && !t.riskEst && t.riskUsd < plan*MIN_RISK_SHARE){ t.riskSmall=t.riskUsd; t.riskUsd=+plan.toFixed(2); t.riskEst=true; if(t.outcome && t.pnlUsd!=null) classify(t); }
+  });
+  S.settings.riskFix2=true;
 }
 // Closed MEXC positions are imported from this point on (your MEXC starting capital date, or your first synced trade).
 if(!S.settings.logSince){ const sc=(S.settings.startCap||{}).mexc, first=Math.min(...S.trades.filter(t=>t.auto&&t.ex==="mexc").map(t=>t.created||Infinity));
