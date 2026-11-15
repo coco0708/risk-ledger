@@ -660,6 +660,30 @@ async function importMexcHistory(){
   if(added){ persist(); if(typeof toast==="function") toast(`${added} closed MEXC trade${added>1?"s":""} added from history`); }
   return added>0;
 }
+// Closed OKX positions the app never saw open (opened and closed between syncs): add them from OKX's position history.
+async function importOkxHistory(){
+  const since=S.settings.logSince||0;
+  let hist=[], ct={}; try{ hist=await exHistory("okx","history"); }catch(e){ return false; }
+  try{ ct=await okxContracts(); }catch(e){ return false; } // no contract sizes: try next sync rather than log wrong sizes
+  const have=new Set(S.trades.map(t=>t.posKey).filter(Boolean)), skip=new Set(S.ignoreKeys||[]); let added=0;
+  for(const h of hist){
+    const key=`okx|${h.posId}|${h.cTime}`, type=String(h.type);
+    if(!["2","3","5"].includes(type)) continue;              // still partly open (1, 4): the live sync has it
+    if(have.has(key) || skip.has(key) || num(h.uTime)<since || !/-USD[TC]-SWAP$/.test(h.instId||"")) continue;
+    const cv=ct[h.instId]; if(!(cv>0)) continue;
+    const sp=splitPair(pairLabel(h.instId.replace(/-SWAP$/,""))), dir=(h.direction||h.posSide)==="short"?"Short":"Long", opened=num(h.cTime)||Date.now();
+    const size=num(h.closeTotalPos||h.openMaxPos)*cv;
+    const t={ id:uid(), created:opened, date:localDate(opened), pair:sp.b+sp.q, sym:h.instId, ex:"okx", market:"futures", lev:num(h.lever)||null, dir,
+      entry:num(h.openAvgPx), sl:null, size0:size||null, sizeNow:0, tpPrices:[], tpHits:0, fees:+(num(h.fee)+num(h.fundingFee)).toFixed(4), note:"From OKX history", posKey:key, auto:true,
+      pnlUsd:+num(h.realizedPnl).toFixed(4), exitPrice:num(h.closeAvgPx)||null, closedAt:num(h.uTime)||Date.now(), liqClose: type==="3"||undefined };
+    setInitialRisk(t, size, 0, "okx");
+    classify(t);
+    if(S.trades.some(x=>x.posKey===key)) continue;
+    S.trades.push(t); have.add(key); added++;
+  }
+  if(added){ persist(); if(typeof toast==="function") toast(`${added} closed OKX trade${added>1?"s":""} added from history`); }
+  return added>0;
+}
 // Older synced MEXC trades: fill in their real opens, partial closes and closes once.
 async function backfillMexcFills(){
   const todo=S.trades.filter(t=>t.ex==="mexc" && t.auto && t.posKey && !t.fills && !t.fillsTried).slice(0,6); if(!todo.length) return false;
@@ -728,6 +752,7 @@ async function mirrorEx(ex, acc, addNew){
     if(typeof toast==="function") toast(`${pairLabel(t.pair)} closed on ${name} · ${smoney(pnl)} USDT`);
   }
   if(ex==="mexc" && addNew){ if(await importMexcHistory()) changed=true; if(await backfillMexcFills()) changed=true; }
+  if(ex==="okx" && addNew){ if(await importOkxHistory()) changed=true; }
   if(changed) persist();
 }
 
