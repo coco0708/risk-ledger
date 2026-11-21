@@ -684,6 +684,60 @@ async function importOkxHistory(){
   if(added){ persist(); if(typeof toast==="function") toast(`${added} closed OKX trade${added>1?"s":""} added from history`); }
   return added>0;
 }
+// Binance has no list of closed positions, so trades the app missed (opened and closed between syncs) are rebuilt
+// from your fills: realized-profit history says which coins had closes, then that coin's fills are replayed in order.
+// Binance gives fills for the last 7 days, so a trade is recovered if the app syncs within a week of it closing.
+function rebuildBinance(sym, fills){
+  const out=[], pos={}; // per position side: LONG / SHORT (hedge mode) or BOTH (one-way)
+  const sorted=fills.slice().sort((a,b)=>num(a.time)-num(b.time) || num(a.id)-num(b.id));
+  for(const f of sorted){
+    const side=f.positionSide||"BOTH", buy=f.side==="BUY", q=num(f.qty), px=num(f.price), rp=num(f.realizedPnl), fee=f.commissionAsset==="USDT"? num(f.commission) : 0;
+    if(!(q>0)) continue;
+    const fillDir = side==="LONG" ? "Long" : side==="SHORT" ? "Short" : (buy?"Long":"Short"); // the direction this fill would open
+    let p=pos[side];
+    const closing = side==="BOTH" ? (p ? p.dir!==fillDir : rp!==0) : ((side==="LONG")!==buy);
+    if(!closing){
+      if(!p) p=pos[side]={dir:fillDir, openQty:0, openCost:0, closeQty:0, closeVal:0, pnl:0, fee:0, openAt:num(f.time), firstId:String(f.id), left:0};
+      p.openQty+=q; p.openCost+=q*px; p.left+=q; p.fee+=fee; continue;
+    }
+    if(!p){ continue; } // closes a position opened before the 7-day window: can't rebuild it
+    const c=Math.min(q, p.left), share=c/q;
+    p.closeQty+=c; p.closeVal+=c*px; p.left-=c; p.pnl+=rp; p.fee+=fee*share;
+    if(p.left <= p.openQty*1e-6){
+      out.push({sym, dir:p.dir, openAt:p.openAt, closeAt:num(f.time), firstId:p.firstId, size:p.openQty, entry:p.openCost/p.openQty, exit:p.closeVal/p.closeQty, pnl:p.pnl-p.fee, fee:p.fee});
+      delete pos[side];
+      const rest=q-c; // one-way mode: one fill closed the position and opened the other way
+      if(side==="BOTH" && rest>q*1e-6) pos[side]={dir:fillDir, openQty:rest, openCost:rest*px, closeQty:0, closeVal:0, pnl:0, fee:fee*(1-share), openAt:num(f.time), firstId:String(f.id)+"r", left:rest};
+    }
+  }
+  return out; // positions still open are left to the live sync
+}
+let binImportAt=0;
+async function importBinanceHistory(){
+  if(Date.now()-binImportAt < 120000) return false; binImportAt=Date.now(); // at most every 2 minutes
+  const since=Math.max(S.settings.logSince||0, Date.now()-7*86400e3+60e3);
+  let pnl=[]; try{ const j=JSON.parse(await privateGet("binance","pnl:"+Math.round(since))); if(!Array.isArray(j)) return false; pnl=j; }catch(e){ return false; }
+  const syms=[...new Set(pnl.map(x=>x.symbol).filter(x=>/^[A-Z0-9]{2,30}USD[TC]$/.test(x||"")))];
+  const have=new Set(S.trades.map(t=>t.posKey).filter(Boolean)), skip=new Set(S.ignoreKeys||[]); let added=0;
+  for(const sym of syms){
+    let fills; try{ fills=await exHistory("binance","trades:"+sym+":"+Math.round(since)); }catch(e){ continue; }
+    for(const r of rebuildBinance(sym, fills)){
+      const key=`binance-h|${sym}|${r.firstId}`;
+      if(have.has(key) || skip.has(key) || r.closeAt<since) continue;
+      // already in the log from the live sync (same coin and side, seen while this position was open)
+      if(S.trades.some(t=>t.ex==="binance" && t.sym===sym && t.dir===r.dir && (t.created||0)>=r.openAt-300e3 && (t.created||0)<=r.closeAt+300e3)) continue;
+      const sp=splitPair(pairLabel(sym)), lev=(S.trades.find(x=>x.ex==="binance" && x.sym===sym && x.lev)||{}).lev||null;
+      const t={ id:uid(), created:r.openAt, date:localDate(r.openAt), pair:sp.b+sp.q, sym, ex:"binance", market:"futures", lev, dir:r.dir,
+        entry:r.entry, sl:null, size0:r.size, sizeNow:0, tpPrices:[], tpHits:0, fees:+r.fee.toFixed(4), note:"From Binance fills", posKey:key, auto:true,
+        pnlUsd:+r.pnl.toFixed(4), exitPrice:r.exit||null, closedAt:r.closeAt };
+      setInitialRisk(t, r.size, 0, "binance");
+      classify(t);
+      S.trades.push(t); have.add(key); added++;
+    }
+  }
+  if(added){ persist(); if(typeof toast==="function") toast(`${added} closed Binance trade${added>1?"s":""} added from your fills`); }
+  return added>0;
+}
 // Older synced MEXC trades: fill in their real opens, partial closes and closes once.
 async function backfillMexcFills(){
   const todo=S.trades.filter(t=>t.ex==="mexc" && t.auto && t.posKey && !t.fills && !t.fillsTried).slice(0,6); if(!todo.length) return false;
@@ -753,6 +807,7 @@ async function mirrorEx(ex, acc, addNew){
   }
   if(ex==="mexc" && addNew){ if(await importMexcHistory()) changed=true; if(await backfillMexcFills()) changed=true; }
   if(ex==="okx" && addNew){ if(await importOkxHistory()) changed=true; }
+  if(ex==="binance" && addNew){ if(await importBinanceHistory()) changed=true; }
   if(changed) persist();
 }
 
@@ -1191,7 +1246,7 @@ function drawSpark(c){
 function forget(list){
   S.ignoreKeys=S.ignoreKeys||[]; S.ignoreOpen=S.ignoreOpen||{};
   list.forEach(t=>{ if(!t.posKey) return;
-    if(/^(mexc|okx)\|/.test(t.posKey)){ if(!S.ignoreKeys.includes(t.posKey)) S.ignoreKeys.push(t.posKey); }
+    if(/^(mexc|okx|binance-h)\|/.test(t.posKey)){ if(!S.ignoreKeys.includes(t.posKey)) S.ignoreKeys.push(t.posKey); }
     else if(!t.outcome) S.ignoreOpen[t.posKey]=1; });
 }
 // partial closes: closing fills before the final one (all of them while the trade is still open)

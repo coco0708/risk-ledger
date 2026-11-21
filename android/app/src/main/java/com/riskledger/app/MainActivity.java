@@ -285,6 +285,11 @@ public class MainActivity extends Activity {
                     path = p[0].equals("income") ? "/fapi/v1/income" : "/fapi/v1/userTrades";
                     params = "symbol=" + p[1] + "&startTime=" + p[2] + "&limit=1000&";
                 }
+                else if (p.length == 2 && p[0].equals("pnl") && p[1].matches("\\d{10,14}")) {
+                    // realized profit on every symbol: which coins had closes, for rebuilding trades the app missed
+                    path = "/fapi/v1/income";
+                    params = "incomeType=REALIZED_PNL&startTime=" + p[1] + "&limit=1000&";
+                }
                 else { r.body = "Unknown request"; return r; }
                 long ts = serverTime("https://fapi.binance.com/fapi/v1/time", "serverTime");
                 String q = params + "recvWindow=10000&timestamp=" + ts;
